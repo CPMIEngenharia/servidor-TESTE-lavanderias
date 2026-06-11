@@ -309,7 +309,8 @@ app.post('/api/verificar_pagamento_fisico', async (req, res) => {
     if (!config || !intentId) return res.json({ status: 'NONE' });
 
     try {
-        const response = await axios.get(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${intentId}`, {
+        // CORREÇÃO: A consulta no Mercado Pago não usa o device_id no link!
+        const response = await axios.get(`https://api.mercadopago.com/point/integration-api/payment-intents/${intentId}`, {
             headers: { 'Authorization': `Bearer ${config.token_mp}` }
         });
 
