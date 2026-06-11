@@ -454,6 +454,12 @@ app.get('/totem/:donoUrl', (req, res) => {
         .box-branca { background: white; padding: 20px; border-radius: 15px; display: inline-block; margin: 20px 0; }
         .spinner { border: 4px solid rgba(255,255,255,0.3); border-radius: 50%; border-top: 4px solid #f1c40f; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 20px auto; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        /* Modal de Alerta Customizado */
+        #modal-alerta { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999; justify-content: center; align-items: center; }
+        .alerta-box { background: white; padding: 30px; border-radius: 15px; text-align: center; max-width: 400px; color: #2c3e50; }
+        .alerta-box h3 { color: #e74c3c; margin-top: 0; font-size: 24px; }
+        .alerta-btn { background: #34495e; color: white; border: none; padding: 15px 30px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 20px; width: 100%; }
     </style></head><body>
 
         <div id="tela-principal" class="tela ativa">
@@ -524,10 +530,20 @@ app.get('/totem/:donoUrl', (req, res) => {
                 <p>A sua máquina foi iniciada com sucesso.</p>
             </div>
         </div>
+        
+        <div id="modal-alerta">
+            <div class="alerta-box">
+                <div class="icon-gigante">⏳</div>
+                <h3 id="alerta-titulo">Tempo Esgotado</h3>
+                <p id="alerta-msg">A transação foi cancelada por inatividade. A máquina já está libertada para a próxima pessoa.</p>
+                <button class="alerta-btn" onclick="fecharAlerta()">ENTENDIDO</button>
+            </div>
+        </div>
 
         <script>
             let maqAlvo = ''; let nomeExibicao = ''; let tipoAlvo = ''; let tempoAlvo = '';
             let intervaloFisico = null; let intervaloPix = null;
+            let timerInatividade = null; // NOVO: Cronómetro de Abandono
 
             function mostrarTela(id) {
                 document.querySelectorAll('.tela').forEach(t => t.classList.remove('ativa'));
@@ -537,7 +553,27 @@ app.get('/totem/:donoUrl', (req, res) => {
             function voltarInicio() { 
                 if(intervaloFisico) clearInterval(intervaloFisico);
                 if(intervaloPix) clearInterval(intervaloPix);
+                if(timerInatividade) clearTimeout(timerInatividade); // Desliga o cronómetro
                 mostrarTela('tela-principal'); 
+            }
+            
+            function exibirAlerta(titulo, msg) {
+                document.getElementById('alerta-titulo').innerText = titulo;
+                document.getElementById('alerta-msg').innerText = msg;
+                document.getElementById('modal-alerta').style.display = 'flex';
+            }
+            
+            function fecharAlerta() {
+                document.getElementById('modal-alerta').style.display = 'none';
+            }
+
+            function iniciarCronometro() {
+                if(timerInatividade) clearTimeout(timerInatividade);
+                // 75 SEGUNDOS para o cliente pagar, se não pagar, cancela sozinho!
+                timerInatividade = setTimeout(() => {
+                    exibirAlerta("Tempo Esgotado", "Cancelámos a operação por inatividade para libertar o Totem.");
+                    cancelarTransacao();
+                }, 75000); 
             }
 
             function iniciarFluxo(id, numero, tipo) {
@@ -557,10 +593,11 @@ app.get('/totem/:donoUrl', (req, res) => {
                 fetch('/api/pagar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo, tempo: tempoAlvo }) })
                 .then(r => r.json()).then(d => {
                     if(d.error) { 
-                        alert("⚠️ Maquininha Ocupada ou Indisponível: " + d.error); 
+                        exibirAlerta("Maquininha Indisponível", "Aviso: " + d.error); 
                         voltarInicio(); 
                     } else { 
                         iniciarRadarMaquininha(maqAlvo); 
+                        iniciarCronometro(); // ⏳ LIGA O CRONÓMETRO DE ABANDONO
                     }
                 }).catch(e => voltarInicio());
             }
@@ -577,16 +614,17 @@ app.get('/totem/:donoUrl', (req, res) => {
                         document.getElementById('area-qrcode').style.display = 'block';
                         document.getElementById('imgPix').src = "data:image/jpeg;base64," + d.qr_code_base64; 
                         iniciarRadarPix(maqAlvo); 
-                    } else { alert('Erro ao gerar PIX.'); voltarInicio(); }
+                        iniciarCronometro(); // ⏳ LIGA O CRONÓMETRO DE ABANDONO
+                    } else { exibirAlerta("Erro", "Erro ao gerar PIX."); voltarInicio(); }
                 }).catch(e => voltarInicio());
             }
 
             function cancelarTransacao() {
+                // Ao cancelar, avisa o servidor para limpar a fila da maquininha física
                 fetch('/api/cancelar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo }) });
                 voltarInicio();
             }
 
-            // NOVO RADAR BLINDADO (Comunicação via POST)
             function iniciarRadarMaquininha(id) { 
                 intervaloFisico = setInterval(async () => { 
                     try { 
@@ -599,28 +637,28 @@ app.get('/totem/:donoUrl', (req, res) => {
 
                         if (dataMp.status === 'APPROVED') {
                             clearInterval(intervaloFisico);
+                            if(timerInatividade) clearTimeout(timerInatividade); // Sucesso! Desliga cronómetro
                             mostrarTela('tela-sucesso');
                             setTimeout(() => window.location.reload(), 4000);
                             return;
                         } else if (dataMp.status === 'REJECTED') {
                             clearInterval(intervaloFisico);
-                            alert("Pagamento cancelado ou recusado na maquininha.");
+                            exibirAlerta("Pagamento Cancelado", "A operação foi cancelada ou recusada na maquininha.");
                             voltarInicio();
                             return;
                         }
 
-                        // Verificação de Segurança MQTT
+                        // Verificação MQTT (backup)
                         let res = await fetch('/api/status_geral?t=' + new Date().getTime()); 
                         let statusCache = await res.json(); 
                         let st = statusCache[id] || "DISPONIVEL"; 
                         if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { 
                             clearInterval(intervaloFisico);
+                            if(timerInatividade) clearTimeout(timerInatividade);
                             mostrarTela('tela-sucesso');
                             setTimeout(() => window.location.reload(), 4000);
                         } 
-                    } catch(e) {
-                        console.error("Radar falhou no loop, tentando de novo...");
-                    } 
+                    } catch(e) { } 
                 }, 2500); 
             }
 
@@ -632,6 +670,7 @@ app.get('/totem/:donoUrl', (req, res) => {
                         let st = statusCache[id] || "DISPONIVEL"; 
                         if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { 
                             clearInterval(intervaloPix);
+                            if(timerInatividade) clearTimeout(timerInatividade); // Sucesso! Desliga cronómetro
                             mostrarTela('tela-sucesso');
                             setTimeout(() => window.location.reload(), 4000);
                         } 
