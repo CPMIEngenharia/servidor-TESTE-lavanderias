@@ -124,33 +124,19 @@ mqttClient.on('message', (topic, message) => {
 });
 
 // ==========================================
-// O MOTOR CENTRALIZADO (RESOLVE TODOS OS BUGS)
-// ==========================================
-// ==========================================
-// O MOTOR CENTRALIZADO (COM FILTRO POR FRANQUIA)
-// ==========================================
-// ==========================================
 // O MOTOR CENTRALIZADO (O VERDADEIRO CÉREBRO)
 // ==========================================
 function executarDisparo(idMaquina, parametro) {
-    // ❌ Falsificação de status REMOVIDA. 
-    // A tela do cliente agora só vai dizer "Aprovado" quando a máquina ligar de verdade!
-    
     let tempoLimpo = String(parametro).replace(/[^0-9]/g, '');
     if (!tempoLimpo || tempoLimpo === "0") tempoLimpo = "45"; 
 
     if (!idMaquina.toLowerCase().includes('sec')) {
-        // LAVADORAS: Comando antigo direto, à prova de falhas.
         mqttClient.publish(`lavanderia/${idMaquina}/comandos`, 'CMD_45', { qos: 1 });
     } else {
-        // SECADORAS: Tenta o comando novo
         mqttClient.publish(`lavanderia/${idMaquina}/comandos`, `SECAR:${tempoLimpo}`, { qos: 1 });
         
-        // Damos 12 segundos (Tempo necessário para o Crash e Reboot da placa velha)
         setTimeout(() => {
             let st = STATUS_CACHE[idMaquina] || "DISPONIVEL";
-            
-            // Se a máquina não estiver fisicamente confirmada como ocupada...
             if (!st.includes("TEMPO:") && !st.includes("SECANDO") && !st.includes("OCUPADA") && !st.includes("LAVANDO")) {
                 console.log(`⚠️ [CRASH/PLACA ANTIGA DETETADA EM ${idMaquina}] Disparando CMD_SECAR`);
                 mqttClient.publish(`lavanderia/${idMaquina}/comandos`, 'CMD_SECAR', { qos: 1 });
@@ -160,6 +146,7 @@ function executarDisparo(idMaquina, parametro) {
         }, 12000);
     }
 }
+
 // --- ROTAS DO PAINEL E PLANILHA ---
 app.get('/painel', (req, res) => {
     const donoLogado = req.cookies.dono;
@@ -303,24 +290,15 @@ app.post('/api/acionar', (req, res) => {
     const dono = req.cookies.dono; const { id, cmd } = req.body;
     if (!dono || !CLIENTES[id] || CLIENTES[id].dono !== dono) return res.status(403).json({ error: "Proibido" });
     
-    // A MÁGICA: Se o comando for do novo botão dinâmico (ex: SECAR:60), enviamos para o CÉREBRO!
     if (cmd.includes('SECAR:')) {
         let tempoParaSecar = cmd.split(':')[1];
         executarDisparo(id, tempoParaSecar);
     } else {
-        // Para os outros botões antigos (Lavagem, Só Enxague, Forçar Liga), mandamos direto.
         mqttClient.publish(`lavanderia/${id}/comandos`, cmd, { qos: 1 }); 
     }
     
     res.json({ success: true });
 });
-
-// ==========================================
-// CONTINUE COPIANDO A PARTE 2 ABAIXO
-// ==========================================
-// ==========================================
-// CONTINUAÇÃO (PARTE 2)
-// ==========================================
 
 app.get('/app/:id', async (req, res) => {
     const id = req.params.id;
@@ -371,7 +349,6 @@ app.get('/app/:id', async (req, res) => {
     </body></html>`);
 });
 
-// --- ROTEAMENTO COM METADATA FIXO ---
 app.post('/criar_pagamento', async (req, res) => {
     let { id_maquina, tempo } = req.body;
     if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
@@ -409,7 +386,6 @@ app.post('/api/gerar_pix', async (req, res) => {
     } catch (e) { res.status(500).json({ error: "Erro Pix" }); }
 });
 
-// --- O CÉREBRO DE DESPACHO (CHAMA A FUNÇÃO CENTRAL) ---
 app.post('/webhook', async (req, res) => {
     let tipoEvento = req.query.type || req.body.type || req.body.action || req.query.topic;
 
@@ -417,7 +393,7 @@ app.post('/webhook', async (req, res) => {
         const info = req.body;
         if (info.state === 'FINISHED' && info.payment && info.payment.state === 'approved' && info.additional_info && info.additional_info.external_reference) {
             const partes = info.additional_info.external_reference.split('|');
-            if (partes[0] && partes[1]) executarDisparo(partes[0], partes[1]); // ID e Tempo
+            if (partes[0] && partes[1]) executarDisparo(partes[0], partes[1]); 
         }
         return res.sendStatus(200);
     }
@@ -473,9 +449,7 @@ app.get('/limpar-fila/:id_maquina', async (req, res) => {
     try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); res.send("<h2 style='color:green;'>✅ Fila limpa!</h2>"); } catch (error) { res.send("<p>" + error.message + "</p>"); }
 });
 
-app.get('/totem/:donoUrl', (req, res) => { res.send(`<!DOCTYPE html><html><body style="text-align:center; padding:50px;"><h1>Totem Ativo</h1><p>Acesse POS Stone ou adesivos.</p></body></html>`); });
-
-app.get('/pos-stone/:donoUrl', (req, res) => {
+app.get('/totem/:donoUrl', (req, res) => {
     const donoRequisitado = req.params.donoUrl.toLowerCase();
     let maquinasDaLoja = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono.toLowerCase() === donoRequisitado);
     if (maquinasDaLoja.length === 0) return res.send("<h1>Nenhuma máquina encontrada.</h1>");
@@ -489,15 +463,50 @@ app.get('/pos-stone/:donoUrl', (req, res) => {
     });
 
     res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>body{font-family:sans-serif; text-align:center; background:#ecf0f1; margin:0;} .passo{display:none;} .ativo{display:block;} .btn-gigante{width:90%; padding:20px; font-size:20px; color:white; border:none; border-radius:10px; margin:10px auto; display:block;} .btn-maq{padding:20px; font-size:18px; color:white; border:none; border-radius:8px;} .livre{background:#34495e;} .ocupada{background:#95a5a6; opacity:0.5;} .grid{display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:20px;}</style></head><body>
-        <div style="background:#27ae60; color:white; padding:20px; font-size:24px; font-weight:bold;">Unileve POS</div>
+        <div style="background:#27ae60; color:white; padding:20px; font-size:24px; font-weight:bold;">Autoatendimento Unileve</div>
         <div id="passo1" class="passo ativo"><h2>O que deseja fazer?</h2><button class="btn-gigante" style="background:#2980b9;" onclick="irPasso2('lavar')">💧 LAVAR</button><button class="btn-gigante" style="background:#e67e22;" onclick="irPasso2('secar')">🔥 SECAR</button></div>
         <div id="passo2" class="passo"><h2 id="tit2">Escolha a Máquina</h2><div id="listaL" class="grid" style="display:none;">${botoesLavar}</div><div id="listaS" class="grid" style="display:none;">${botoesSecar}</div></div>
-        <div id="passo3" class="passo"><h2>Como deseja pagar?</h2><button class="btn-gigante" style="background:#1abc9c;" onclick="chamarStone()">🟢 PIX</button><button class="btn-gigante" style="background:#8e44ad;" onclick="chamarStone()">💳 CARTÃO</button></div>
-        <div id="passo4" class="passo"><h2>Aprovado! ✅</h2><p>Máquina liberada.</p></div>
+        <div id="passo3" class="passo"><h2>Como deseja pagar?</h2><button class="btn-gigante" style="background:#1abc9c;" onclick="chamarPix()">🟢 PIX (QR CODE)</button><button class="btn-gigante" style="background:#8e44ad;" onclick="chamarMaquininhaMP()">💳 MAQUININHA FÍSICA</button></div>
+        <div id="passo4" class="passo"><h2 id="msgFinal" style="margin-top:40px;">Processando...</h2><p id="subMsg">Aguarde...</p></div>
         <script>
-            let maqAlvo = ''; function irPasso2(tipo) { document.getElementById('passo1').className='passo'; document.getElementById('passo2').className='passo ativo'; document.getElementById('listaL').style.display = tipo==='lavar'?'grid':'none'; document.getElementById('listaS').style.display = tipo==='secar'?'grid':'none'; }
+            let maqAlvo = ''; let tempoAlvo = '45';
+            function irPasso2(tipo) { tempoAlvo = tipo==='secar' ? 'preco_secar' : 'preco_45'; document.getElementById('passo1').className='passo'; document.getElementById('passo2').className='passo ativo'; document.getElementById('listaL').style.display = tipo==='lavar'?'grid':'none'; document.getElementById('listaS').style.display = tipo==='secar'?'grid':'none'; }
             function selecionarMaquina(id, num) { maqAlvo = id; document.getElementById('passo2').className='passo'; document.getElementById('passo3').className='passo ativo'; }
-            function chamarStone() { document.getElementById('passo3').className='passo'; document.getElementById('passo4').className='passo ativo'; setTimeout(()=>{ fetch('/criar_pagamento',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id_maquina:maqAlvo})}); setTimeout(()=>window.location.reload(), 3000); }, 2000); }
+            
+            function chamarMaquininhaMP() { 
+                document.getElementById('passo3').className='passo'; document.getElementById('passo4').className='passo ativo'; 
+                document.getElementById('msgFinal').innerText = "💳 Siga para a Maquininha!";
+                document.getElementById('msgFinal').style.color = "#8e44ad";
+                document.getElementById('subMsg').innerText = "Insira ou aproxime o cartão na máquina ao lado...";
+                
+                fetch('/api/pagar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo, tempo: tempoAlvo }) })
+                .then(r => r.json()).then(d => {
+                    if(d.error) { alert("Atenção: " + d.error); window.location.reload(); }
+                    else { iniciarMonitoramento(maqAlvo); }
+                }).catch(e => window.location.reload());
+            }
+            
+            function chamarPix() {
+                document.getElementById('passo3').className='passo'; document.getElementById('passo4').className='passo ativo';
+                document.getElementById('msgFinal').innerText = "📱 Redirecionando para PIX...";
+                window.location.href = '/app/' + maqAlvo; 
+            }
+
+            function iniciarMonitoramento(id) { 
+                setInterval(async () => { 
+                    try { 
+                        let res = await fetch('/api/status_geral?t=' + new Date().getTime()); 
+                        let statusCache = await res.json(); 
+                        let st = statusCache[id] || "DISPONIVEL"; 
+                        if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { 
+                            document.getElementById('msgFinal').innerText = "Aprovado! ✅"; 
+                            document.getElementById('msgFinal').style.color = "#27ae60";
+                            document.getElementById('subMsg').innerText = "Máquina liberada.";
+                            setTimeout(() => window.location.reload(), 4000);
+                        } 
+                    } catch(e) {} 
+                }, 3000); 
+            }
         </script>
     </body></html>`);
 });
