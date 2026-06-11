@@ -300,8 +300,9 @@ app.post('/api/acionar', (req, res) => {
     res.json({ success: true });
 });
 
-app.get('/api/verificar_pagamento_fisico/:id_maquina', async (req, res) => {
-    const id_maquina = req.params.id_maquina;
+// --- NOVO RADAR BLINDADO COM MÉTODO POST ---
+app.post('/api/verificar_pagamento_fisico', async (req, res) => {
+    const { id_maquina } = req.body;
     const config = CLIENTES[id_maquina];
     const intentId = INTENTS_ATIVOS[id_maquina];
 
@@ -312,35 +313,30 @@ app.get('/api/verificar_pagamento_fisico/:id_maquina', async (req, res) => {
             headers: { 'Authorization': `Bearer ${config.token_mp}` }
         });
 
-        if (response.data.state === 'FINISHED') {
-            delete INTENTS_ATIVOS[id_maquina]; // Remove da fila
+        const estado = response.data.state;
+        console.log(`[RADAR] Status da maquininha para ${id_maquina}: ${estado}`);
 
-            // Aceita várias formas que o MP usa para dizer que foi pago (state, status ou detail)
-            let aprovado = false;
-            if (response.data.payment) {
-                if (response.data.payment.state === 'approved' || response.data.payment.status === 'approved' || response.data.payment.status_detail === 'accredited') {
-                    aprovado = true;
-                }
+        // A regra de ouro: FINISHED significa que concluiu com sucesso!
+        if (estado === 'FINISHED') {
+            delete INTENTS_ATIVOS[id_maquina]; 
+            
+            let tempo = '45'; 
+            if (response.data.additional_info && response.data.additional_info.external_reference) {
+                const partes = response.data.additional_info.external_reference.split('|');
+                if (partes[1]) tempo = partes[1];
             }
-
-            if (aprovado) {
-                let tempo = '45'; // Valor padrão seguro
-                
-                // Tenta extrair o tempo apenas se o campo realmente existir
-                if (response.data.additional_info && response.data.additional_info.external_reference) {
-                    const partes = response.data.additional_info.external_reference.split('|');
-                    if (partes[1]) tempo = partes[1];
-                }
-                
-                executarDisparo(id_maquina, tempo);
-                return res.json({ status: 'APPROVED' });
-            } else {
-                return res.json({ status: 'REJECTED' }); // Recusado na maquininha
-            }
+            
+            executarDisparo(id_maquina, tempo);
+            return res.json({ status: 'APPROVED' });
+            
+        } else if (estado === 'CANCELED' || estado === 'ERROR' || estado === 'ABANDONED') {
+            delete INTENTS_ATIVOS[id_maquina];
+            return res.json({ status: 'REJECTED' });
         }
+        
         res.json({ status: 'PENDING' });
     } catch (e) {
-        console.log("Erro no radar físico:", e.message); // Vai mostrar no log se o MP der erro
+        console.log("Erro interno no Radar:", e.message);
         res.json({ status: 'ERROR' });
     }
 });
@@ -589,11 +585,15 @@ app.get('/totem/:donoUrl', (req, res) => {
                 voltarInicio();
             }
 
-            // RADAR EXCLUSIVO PARA A MAQUININHA (Sem depender de Webhooks)
+            // NOVO RADAR BLINDADO (Comunicação via POST)
             function iniciarRadarMaquininha(id) { 
                 intervaloFisico = setInterval(async () => { 
                     try { 
-                        let resMp = await fetch('/api/verificar_pagamento_fisico/' + id);
+                        let resMp = await fetch('/api/verificar_pagamento_fisico', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ id_maquina: id })
+                        });
                         let dataMp = await resMp.json();
 
                         if (dataMp.status === 'APPROVED') {
@@ -608,7 +608,7 @@ app.get('/totem/:donoUrl', (req, res) => {
                             return;
                         }
 
-                        // Verificação de Segurança MQTT (Caso a máquina acorde por outra via)
+                        // Verificação de Segurança MQTT
                         let res = await fetch('/api/status_geral?t=' + new Date().getTime()); 
                         let statusCache = await res.json(); 
                         let st = statusCache[id] || "DISPONIVEL"; 
@@ -617,11 +617,12 @@ app.get('/totem/:donoUrl', (req, res) => {
                             mostrarTela('tela-sucesso');
                             setTimeout(() => window.location.reload(), 4000);
                         } 
-                    } catch(e) {} 
+                    } catch(e) {
+                        console.error("Radar falhou no loop, tentando de novo...");
+                    } 
                 }, 2500); 
             }
 
-            // RADAR EXCLUSIVO PARA PIX
             function iniciarRadarPix(id) { 
                 intervaloPix = setInterval(async () => { 
                     try { 
