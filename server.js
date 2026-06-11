@@ -300,7 +300,6 @@ app.post('/api/acionar', (req, res) => {
     res.json({ success: true });
 });
 
-// --- RADAR ATIVO (BURLA O WEBHOOK PARA MAQUININHA FÍSICA) ---
 app.get('/api/verificar_pagamento_fisico/:id_maquina', async (req, res) => {
     const id_maquina = req.params.id_maquina;
     const config = CLIENTES[id_maquina];
@@ -314,20 +313,34 @@ app.get('/api/verificar_pagamento_fisico/:id_maquina', async (req, res) => {
         });
 
         if (response.data.state === 'FINISHED') {
-            delete INTENTS_ATIVOS[id_maquina]; // Remove da fila para evitar ciclos duplos
+            delete INTENTS_ATIVOS[id_maquina]; // Remove da fila
 
-            if (response.data.payment && response.data.payment.state === 'approved') {
-                // Pagamento 100% Confirmado! Dispara a máquina.
-                const partes = response.data.additional_info.external_reference.split('|');
-                let tempo = partes[1] || '45';
+            // Aceita várias formas que o MP usa para dizer que foi pago (state, status ou detail)
+            let aprovado = false;
+            if (response.data.payment) {
+                if (response.data.payment.state === 'approved' || response.data.payment.status === 'approved' || response.data.payment.status_detail === 'accredited') {
+                    aprovado = true;
+                }
+            }
+
+            if (aprovado) {
+                let tempo = '45'; // Valor padrão seguro
+                
+                // Tenta extrair o tempo apenas se o campo realmente existir
+                if (response.data.additional_info && response.data.additional_info.external_reference) {
+                    const partes = response.data.additional_info.external_reference.split('|');
+                    if (partes[1]) tempo = partes[1];
+                }
+                
                 executarDisparo(id_maquina, tempo);
                 return res.json({ status: 'APPROVED' });
             } else {
-                return res.json({ status: 'REJECTED' }); // Pagamento recusado ou cancelado na máquina
+                return res.json({ status: 'REJECTED' }); // Recusado na maquininha
             }
         }
         res.json({ status: 'PENDING' });
     } catch (e) {
+        console.log("Erro no radar físico:", e.message); // Vai mostrar no log se o MP der erro
         res.json({ status: 'ERROR' });
     }
 });
