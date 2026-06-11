@@ -452,60 +452,234 @@ app.get('/limpar-fila/:id_maquina', async (req, res) => {
 app.get('/totem/:donoUrl', (req, res) => {
     const donoRequisitado = req.params.donoUrl.toLowerCase();
     let maquinasDaLoja = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono.toLowerCase() === donoRequisitado);
-    if (maquinasDaLoja.length === 0) return res.send("<h1>Nenhuma máquina encontrada.</h1>");
+    if (maquinasDaLoja.length === 0) return res.send("<h1 style='text-align:center; margin-top:50px;'>Nenhuma máquina encontrada.</h1>");
 
-    let botoesLavar = ''; let botoesSecar = '';
+    // Agrupar por conjuntos (ex: 01, 02)
+    let conjuntos = {};
     maquinasDaLoja.forEach(id => {
         let numero = (id.match(/\d+$/) || [id.toUpperCase()])[0];
-        let isOcupada = (STATUS_CACHE[id] || "").includes("TEMPO:") || (STATUS_CACHE[id] || "").includes("LAVANDO") || (STATUS_CACHE[id] || "").includes("OCUPADA");
-        let htmlBotao = `<button class="btn-maq ${isOcupada ? 'ocupada' : 'livre'}" onclick="${isOcupada ? "alert('Ocupada')" : `selecionarMaquina('${id}', '${numero}')`}">${numero}</button>`;
-        id.toLowerCase().includes('sec') ? botoesSecar += htmlBotao : botoesLavar += htmlBotao;
+        if (!conjuntos[numero]) conjuntos[numero] = { lavadora: null, secadora: null };
+        if (id.toLowerCase().includes('sec')) conjuntos[numero].secadora = id;
+        else conjuntos[numero].lavadora = id;
     });
 
-    res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>body{font-family:sans-serif; text-align:center; background:#ecf0f1; margin:0;} .passo{display:none;} .ativo{display:block;} .btn-gigante{width:90%; padding:20px; font-size:20px; color:white; border:none; border-radius:10px; margin:10px auto; display:block;} .btn-maq{padding:20px; font-size:18px; color:white; border:none; border-radius:8px;} .livre{background:#34495e;} .ocupada{background:#95a5a6; opacity:0.5;} .grid{display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:20px;}</style></head><body>
-        <div style="background:#27ae60; color:white; padding:20px; font-size:24px; font-weight:bold;">Autoatendimento Unileve</div>
-        <div id="passo1" class="passo ativo"><h2>O que deseja fazer?</h2><button class="btn-gigante" style="background:#2980b9;" onclick="irPasso2('lavar')">💧 LAVAR</button><button class="btn-gigante" style="background:#e67e22;" onclick="irPasso2('secar')">🔥 SECAR</button></div>
-        <div id="passo2" class="passo"><h2 id="tit2">Escolha a Máquina</h2><div id="listaL" class="grid" style="display:none;">${botoesLavar}</div><div id="listaS" class="grid" style="display:none;">${botoesSecar}</div></div>
-        <div id="passo3" class="passo"><h2>Como deseja pagar?</h2><button class="btn-gigante" style="background:#1abc9c;" onclick="chamarPix()">🟢 PIX (QR CODE)</button><button class="btn-gigante" style="background:#8e44ad;" onclick="chamarMaquininhaMP()">💳 MAQUININHA FÍSICA</button></div>
-        <div id="passo4" class="passo"><h2 id="msgFinal" style="margin-top:40px;">Processando...</h2><p id="subMsg">Aguarde...</p></div>
+    let htmlConjuntos = '';
+    Object.keys(conjuntos).sort().forEach(num => {
+        let conj = conjuntos[num];
+        let btnSecadora = ''; let btnLavadora = '';
+
+        if (conj.secadora) {
+            let isOcupada = (STATUS_CACHE[conj.secadora] || "").includes("TEMPO:") || (STATUS_CACHE[conj.secadora] || "").includes("SECANDO") || (STATUS_CACHE[conj.secadora] || "").includes("OCUPADA");
+            btnSecadora = `<button class="btn-maq secadora ${isOcupada ? 'ocupada' : ''}" onclick="${isOcupada ? '' : `iniciarFluxo('${conj.secadora}', '${num}', 'secar')`}">
+                <div class="icon">🔥</div><h3>SECADORA ${num}</h3><p>${isOcupada ? 'EM USO' : 'TOCAR PARA PAGAR'}</p>
+            </button>`;
+        }
+        if (conj.lavadora) {
+            let isOcupada = (STATUS_CACHE[conj.lavadora] || "").includes("TEMPO:") || (STATUS_CACHE[conj.lavadora] || "").includes("LAVANDO") || (STATUS_CACHE[conj.lavadora] || "").includes("OCUPADA");
+            btnLavadora = `<button class="btn-maq lavadora ${isOcupada ? 'ocupada' : ''}" onclick="${isOcupada ? '' : `iniciarFluxo('${conj.lavadora}', '${num}', 'lavar')`}">
+                <div class="icon">💧</div><h3>LAVADORA ${num}</h3><p>${isOcupada ? 'EM USO' : 'TOCAR PARA PAGAR'}</p>
+            </button>`;
+        }
+
+        htmlConjuntos += `<div class="conjunto-card">
+            <div class="conjunto-title">CONJUNTO ${num}</div>
+            ${btnSecadora}
+            ${btnLavadora}
+        </div>`;
+    });
+
+    res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #eef2f5; margin: 0; padding: 0; user-select: none; }
+        .tela { display: none; min-height: 100vh; flex-direction: column; align-items: center; justify-content: center; width: 100%; box-sizing: border-box; padding: 20px; }
+        .tela.ativa { display: flex; }
+        
+        /* TELA PRINCIPAL (CLARA) */
+        #tela-principal { align-items: center; justify-content: flex-start; padding-top: 40px; }
+        .header-title { color: #34495e; text-align: center; margin-bottom: 30px; }
+        .header-title h1 { margin: 0; font-size: 32px; }
+        .header-title p { margin: 5px 0 0 0; color: #7f8c8d; font-size: 18px; }
+        
+        .grid-conjuntos { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; max-width: 1200px; }
+        .conjunto-card { background: #fff; border-radius: 15px; padding: 20px; width: 260px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); display:flex; flex-direction:column; gap:15px; }
+        .conjunto-title { text-align: center; color: #7f8c8d; font-weight: bold; letter-spacing: 1px; font-size: 14px; }
+        
+        .btn-maq { border: none; border-radius: 12px; padding: 20px 10px; color: white; cursor: pointer; transition: transform 0.1s; display: flex; flex-direction: column; align-items: center; justify-content: center; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        .btn-maq:active { transform: scale(0.97); }
+        .btn-maq h3 { margin: 10px 0 5px 0; font-size: 18px; }
+        .btn-maq p { margin: 0; font-size: 12px; font-weight: bold; background: rgba(0,0,0,0.2); padding: 5px 10px; border-radius: 20px; }
+        .btn-maq .icon { font-size: 35px; }
+        
+        .secadora { background: linear-gradient(135deg, #e67e22, #d35400); }
+        .lavadora { background: linear-gradient(135deg, #3498db, #2980b9); }
+        .ocupada { filter: grayscale(100%); opacity: 0.6; cursor: not-allowed; }
+
+        /* TELAS ESCURAS (MODAIS) */
+        .tela-escura { background: #2c3e50; color: white; text-align: center; }
+        .icon-gigante { font-size: 60px; margin-bottom: 10px; }
+        .box-aviso { max-width: 500px; width: 100%; }
+        .box-aviso h2 { color: #f1c40f; font-size: 30px; margin-bottom: 20px; }
+        .box-aviso p { font-size: 20px; line-height: 1.5; margin-bottom: 30px; }
+        .alerta-vermelho { background: rgba(231, 76, 60, 0.2); border: 1px solid #e74c3c; color: #e74c3c; padding: 10px; border-radius: 8px; font-size: 14px; font-weight: bold; margin-bottom: 30px; }
+        
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .btn-acao { padding: 20px; font-size: 18px; font-weight: bold; color: white; border: none; border-radius: 10px; cursor: pointer; }
+        .btn-vermelho { background: #e74c3c; }
+        .btn-verde { background: #27ae60; }
+        
+        /* TELA DE PAGAMENTO */
+        .btn-pagamento { width: 100%; margin-bottom: 15px; padding: 25px; border-radius: 12px; border: none; color: white; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        .btn-pagamento.cartao { background: linear-gradient(135deg, #e74c3c, #c0392b); }
+        .btn-pagamento.pix { background: linear-gradient(135deg, #2ecc71, #27ae60); }
+        .btn-pagamento h3 { margin: 0 0 5px 0; font-size: 24px; }
+        .btn-pagamento p { margin: 0; font-size: 14px; opacity: 0.9; }
+        .btn-cancelar { background: transparent; border: 2px solid #7f8c8d; color: #bdc3c7; width: 100%; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; margin-top: 20px; cursor: pointer; }
+        
+        /* QR CODE E PROCESSAMENTO */
+        .box-branca { background: white; padding: 20px; border-radius: 15px; display: inline-block; margin: 20px 0; }
+        .spinner { border: 4px solid rgba(255,255,255,0.3); border-radius: 50%; border-top: 4px solid #f1c40f; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 20px auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style></head><body>
+
+        <div id="tela-principal" class="tela ativa">
+            <div class="header-title">
+                <h1>Bem-vindo à Unileve</h1>
+                <p>Toque na máquina que você deseja usar:</p>
+            </div>
+            <div class="grid-conjuntos">${htmlConjuntos}</div>
+        </div>
+
+        <div id="tela-atencao" class="tela tela-escura">
+            <div class="box-aviso">
+                <div class="icon-gigante">👕</div>
+                <h2>ATENÇÃO</h2>
+                <p id="txt-pergunta-roupa">Você já colocou as roupas na MÁQUINA e fechou a porta?</p>
+                <div class="alerta-vermelho">⚠️ Após o pagamento aprovado, a máquina iniciará automaticamente.</div>
+                <div class="grid-2">
+                    <button class="btn-acao btn-vermelho" onclick="voltarInicio()">NÃO, VOU COLOCAR</button>
+                    <button class="btn-acao btn-verde" onclick="mostrarPagamento()">SIM, JÁ COLOQUEI!</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="tela-pagamento" class="tela tela-escura">
+            <div class="box-aviso">
+                <h2 style="color:white; margin-bottom:40px;">Como deseja pagar?</h2>
+                <button class="btn-pagamento cartao" onclick="pagarCartao()">
+                    <h3>💳 CARTÃO</h3>
+                    <p>Na maquininha ao lado</p>
+                </button>
+                <button class="btn-pagamento pix" onclick="pagarPix()">
+                    <h3>🟢 PIX</h3>
+                    <p>Ler QR Code nesta tela</p>
+                </button>
+                <button class="btn-cancelar" onclick="voltarInicio()">CANCELAR</button>
+            </div>
+        </div>
+
+        <div id="tela-cartao" class="tela tela-escura">
+            <div class="box-aviso">
+                <div class="icon-gigante" style="color:#e74c3c;">💳</div>
+                <h2 style="color:white;">Vá até a maquininha ao lado!</h2>
+                <p id="txt-liberar-cartao">Aproxime ou insira seu cartão para liberar a MÁQUINA.</p>
+                <button class="btn-cancelar" onclick="cancelarTransacao()">CANCELAR COMPRA</button>
+            </div>
+        </div>
+
+        <div id="tela-pix" class="tela tela-escura">
+            <div class="box-aviso">
+                <h2 style="color:#2ecc71;">Pague com PIX</h2>
+                <p>Abra o app do seu banco e escaneie o código abaixo:</p>
+                <div id="loading-pix">
+                    <div class="spinner"></div>
+                    <p>Gerando código PIX...</p>
+                </div>
+                <div id="area-qrcode" style="display:none;">
+                    <div class="box-branca"><img id="imgPix" src="" style="width:250px; height:250px; display:block;" /></div>
+                    <p style="color:#f1c40f; font-size:16px;">A máquina iniciará automaticamente após o pagamento.</p>
+                </div>
+                <button class="btn-cancelar" onclick="voltarInicio()">CANCELAR COMPRA</button>
+            </div>
+        </div>
+
+        <div id="tela-sucesso" class="tela tela-escura">
+            <div class="box-aviso">
+                <div class="icon-gigante" style="color:#27ae60;">✅</div>
+                <h2 style="color:#27ae60; font-size:40px;">Pagamento Aprovado!</h2>
+                <p>Sua máquina foi iniciada com sucesso.</p>
+            </div>
+        </div>
+
         <script>
-            let maqAlvo = ''; let tempoAlvo = '45';
-            function irPasso2(tipo) { tempoAlvo = tipo==='secar' ? 'preco_secar' : 'preco_45'; document.getElementById('passo1').className='passo'; document.getElementById('passo2').className='passo ativo'; document.getElementById('listaL').style.display = tipo==='lavar'?'grid':'none'; document.getElementById('listaS').style.display = tipo==='secar'?'grid':'none'; }
-            function selecionarMaquina(id, num) { maqAlvo = id; document.getElementById('passo2').className='passo'; document.getElementById('passo3').className='passo ativo'; }
-            
-            function chamarMaquininhaMP() { 
-                document.getElementById('passo3').className='passo'; document.getElementById('passo4').className='passo ativo'; 
-                document.getElementById('msgFinal').innerText = "💳 Siga para a Maquininha!";
-                document.getElementById('msgFinal').style.color = "#8e44ad";
-                document.getElementById('subMsg').innerText = "Insira ou aproxime o cartão na máquina ao lado...";
+            let maqAlvo = ''; let nomeExibicao = ''; let tipoAlvo = ''; let tempoAlvo = '';
+
+            function mostrarTela(id) {
+                document.querySelectorAll('.tela').forEach(t => t.classList.remove('ativa'));
+                document.getElementById(id).classList.add('ativa');
+            }
+
+            function voltarInicio() { mostrarTela('tela-principal'); }
+
+            function iniciarFluxo(id, numero, tipo) {
+                maqAlvo = id; tipoAlvo = tipo;
+                nomeExibicao = (tipo === 'secar' ? 'SECADORA ' : 'LAVADORA ') + numero;
+                tempoAlvo = (tipo === 'secar') ? 'preco_secar' : 'preco_45';
                 
+                document.getElementById('txt-pergunta-roupa').innerText = 'Você já colocou as roupas na ' + nomeExibicao + ' e fechou a porta?';
+                document.getElementById('txt-liberar-cartao').innerText = 'Aproxime ou insira seu cartão para liberar a ' + nomeExibicao + '.';
+                mostrarTela('tela-atencao');
+            }
+
+            function mostrarPagamento() { mostrarTela('tela-pagamento'); }
+
+            function pagarCartao() {
+                mostrarTela('tela-cartao');
                 fetch('/api/pagar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo, tempo: tempoAlvo }) })
                 .then(r => r.json()).then(d => {
-                    if(d.error) { alert("Atenção: " + d.error); window.location.reload(); }
-                    else { iniciarMonitoramento(maqAlvo); }
-                }).catch(e => window.location.reload());
+                    if(d.error) { 
+                        alert("⚠️ Maquininha Ocupada ou Indisponível: " + d.error); 
+                        voltarInicio(); 
+                    } else { 
+                        iniciarMonitoramento(maqAlvo); 
+                    }
+                }).catch(e => voltarInicio());
             }
-            
-            function chamarPix() {
-                document.getElementById('passo3').className='passo'; document.getElementById('passo4').className='passo ativo';
-                document.getElementById('msgFinal').innerText = "📱 Redirecionando para PIX...";
-                window.location.href = '/app/' + maqAlvo; 
+
+            function pagarPix() {
+                mostrarTela('tela-pix');
+                document.getElementById('loading-pix').style.display = 'block';
+                document.getElementById('area-qrcode').style.display = 'none';
+
+                fetch('/api/gerar_pix', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id_maquina: maqAlvo, tempo: tempoAlvo}) })
+                .then(r => r.json()).then(d => {
+                    if (d.success) { 
+                        document.getElementById('loading-pix').style.display = 'none';
+                        document.getElementById('area-qrcode').style.display = 'block';
+                        document.getElementById('imgPix').src = "data:image/jpeg;base64," + d.qr_code_base64; 
+                        iniciarMonitoramento(maqAlvo); 
+                    } else { alert('Erro ao gerar PIX.'); voltarInicio(); }
+                }).catch(e => voltarInicio());
+            }
+
+            function cancelarTransacao() {
+                // Tenta cancelar na maquininha por garantia e volta ao início
+                fetch('/api/cancelar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo }) });
+                voltarInicio();
             }
 
             function iniciarMonitoramento(id) { 
-                setInterval(async () => { 
+                let intervalo = setInterval(async () => { 
                     try { 
                         let res = await fetch('/api/status_geral?t=' + new Date().getTime()); 
                         let statusCache = await res.json(); 
                         let st = statusCache[id] || "DISPONIVEL"; 
                         if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { 
-                            document.getElementById('msgFinal').innerText = "Aprovado! ✅"; 
-                            document.getElementById('msgFinal').style.color = "#27ae60";
-                            document.getElementById('subMsg').innerText = "Máquina liberada.";
-                            setTimeout(() => window.location.reload(), 4000);
+                            clearInterval(intervalo);
+                            mostrarTela('tela-sucesso');
+                            setTimeout(() => window.location.reload(), 5000);
                         } 
                     } catch(e) {} 
-                }, 3000); 
+                }, 2000); 
             }
         </script>
     </body></html>`);
