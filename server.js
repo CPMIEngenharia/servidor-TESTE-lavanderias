@@ -505,7 +505,7 @@ setInterval(async () => {
             }
         }
     }
-}, 3 * 60 * 60 * 1000);
+}, 5 * 60 * 1000); // ⚠️ Roda a cada 5 minutos para teste!
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
