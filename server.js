@@ -33,19 +33,24 @@ function getGoogleAuth() {
     });
 }
 
-// 🔥 A MARRETA EXTREMA: Arranca a máquina do menu "Inserir Valor" e força o modo PDV
+// 🔥 MARRETA EXTREMA CALIBRADA: Intervalos de 5s para forçar o Android a mudar de tela na marra
 async function aplicarMarretaExtrema(deviceId, token) {
     try {
+        console.log(`[MARRETA] Forçando modo STANDALONE no dispositivo ${deviceId}...`);
         await axios.patch(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}`, { operating_mode: "STANDALONE" }, { headers: { 'Authorization': `Bearer ${token}` } });
-        await new Promise(r => setTimeout(r, 2000));
         
+        // ⏱️ Espaço para a nuvem do Mercado Pago registrar a queda do PDV
+        await new Promise(r => setTimeout(r, 5000)); 
+        
+        console.log(`[MARRETA] Forçando retorno para o modo PDV...`);
         await axios.patch(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}`, { operating_mode: "PDV" }, { headers: { 'Authorization': `Bearer ${token}` } });
-        // ⏱️ TEMPO CRÍTICO: Dá 3.5 segundos para a interface do Android mudar fisicamente de tela
-        await new Promise(r => setTimeout(r, 3500)); 
         
-        console.log(`[MARRETA EXTREMA] Tela da máquina ${deviceId} forçada para o modo PDV!`);
+        // ⏱️ Tempo para o Android da maquininha processar a notificação Push e abrir o app na tela
+        await new Promise(r => setTimeout(r, 5000)); 
+        
+        console.log(`[MARRETA EXTREMA] Sincronização de tela concluída com sucesso!`);
     } catch (e) {
-        console.log(`[MARRETA EXTREMA] Falha ao destravar ${deviceId}:`, e.message);
+        console.log(`[MARRETA EXTREMA] Falha na sincronização do dispositivo ${deviceId}:`, e.message);
     }
 }
 
@@ -92,7 +97,7 @@ async function sincronizarPrecosPlanilhas() {
             const linhas = response.data.values;
             if (!linhas || linhas.length === 0) continue;
             
-            const cabecalho = linhas[0];
+            const cabecalho = lines[0];
             const colTempo = cabecalho.findIndex(c => c && (c.trim() === 'Tempo do Ciclo' || c.trim() === 'Tempo Padrão'));
             const colLavar = cabecalho.findIndex(c => c && (c.trim() === 'Preço_lavar' || c.trim() === 'Preço Padrão' || c.trim() === 'preco_45'));
             const colSecar = cabecalho.findIndex(c => c && (c.trim() === 'preco_secar' || c.trim() === 'Preço Secar'));
@@ -188,7 +193,6 @@ app.get('/painel', (req, res) => {
         const isSecadora = id.toLowerCase().includes('sec');
         let dadosAtuais = CACHE_DADOS_MAQUINAS[id] || { preco_lavar: "0", preco_secar: "0", tempo: "45", preco_promo: "", dia_promo: "", hora_inicio: "", hora_fim: "" };
         let precoAtivo = isSecadora ? dadosAtuais.preco_secar : dadosAtuais.preco_lavar;
-        
         let txtPromo = "Nenhuma promoção programada.";
         if (dadosAtuais.preco_promo && dadosAtuais.dia_promo) { txtPromo = `<span style="font-size:16px;">R$ ${dadosAtuais.preco_promo}</span><br>${dadosAtuais.dia_promo} | ${dadosAtuais.hora_inicio || "00:00"} às ${dadosAtuais.hora_fim || "23:59"}`; }
 
@@ -219,7 +223,7 @@ app.get('/painel', (req, res) => {
         function acionar(id, cmd){ if(confirm('Enviar '+cmd+' para '+id+'?')) fetch('/api/acionar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,cmd})}).then(r=>r.json()).then(d=>alert(d.success?'Comando Enviado!':'Erro')) }
         setInterval(() => { fetch('/api/status_geral').then(res => res.json()).then(dados => {
             for (let id in dados) {
-                let badge = document.getElementById('badge-'+id); let statusBox = document.getElementById('status-texto-'+id);
+                let badge = document.getElementById('badge-'+id); let statusBox = document.getElementById('status-texto-${id}');
                 if (badge) { let st = dados[id]; statusBox.innerText = st; if (st.includes("DISPONIVEL")) { badge.style.background = "#27ae60"; badge.innerText = "ONLINE"; } else if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { badge.style.background = "#e67e22"; badge.innerText = "OCUPADA"; } else { badge.style.background = "gray"; badge.innerText = "OFFLINE"; } }
             }
         }) }, 2000); 
@@ -263,20 +267,22 @@ app.post('/api/verificar_pagamento_fisico', async (req, res) => {
     }
 });
 
-// AQUI ESTÁ A OTIMIZAÇÃO DO CLIENTE: O comando de limpar a tela anterior roda invisível SEM bloquear o novo cliente!
 app.post('/api/pagar_fisico', async (req, res) => {
     let { id_maquina, tempo } = req.body; 
     const config = CLIENTES[id_maquina];
     if (!config || !config.device_id) return res.status(400).json({ error: "Máquina não configurada." });
 
     if (INTENTS_ATIVOS[id_maquina]) {
-        forcarCancelamentoMP(config.device_id, INTENTS_ATIVOS[id_maquina], config.token_mp); // Não tem 'await' para não atrasar o cliente
+        forcarCancelamentoMP(config.device_id, INTENTS_ATIVOS[id_maquina], config.token_mp);
         delete INTENTS_ATIVOS[id_maquina];
     }
 
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero na planilha." });
+
+        // Executa a marreta com tempo de respiro calibrado antes de criar a cobrança do cliente
+        await aplicarMarretaExtrema(config.device_id, config.token_mp);
 
         const ordemPagamento = { amount: Math.round(parseFloat(dados.preco) * 100), description: `Unileve - ${id_maquina}`, additional_info: { external_reference: `${id_maquina}|${dados.tempo}`, print_on_terminal: false } };
         const response = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemPagamento, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
@@ -296,7 +302,7 @@ app.post('/api/cancelar_fisico', async (req, res) => {
         delete INTENTS_ATIVOS[id_maquina]; 
     }
     
-    await aplicarMarretaExtrema(config.device_id, config.token_mp); // Força a tela de volta pro PDV
+    await aplicarMarretaExtrema(config.device_id, config.token_mp);
     res.json({ success: true });
 });
 
@@ -428,70 +434,8 @@ app.get('/totem/:donoUrl', (req, res) => {
     </body></html>`);
 });
 
-app.post('/criar_pagamento', async (req, res) => {
-    let { id_maquina, tempo } = req.body;
-    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
-    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Máquina não configurada" });
-    if (STATUS_CACHE[id_maquina] && STATUS_CACHE[id_maquina].includes('TEMPO:')) return res.status(400).json({ error: "MÁQUINA EM USO." });
-
-    try {
-        const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
-        if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
-        const preference = { items: [{ title: `Ciclo ${dados.tempo}min - ${id_maquina}`, unit_price: parseFloat(dados.preco), quantity: 1, currency_id: 'BRL' }], metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, payer: { email: `cliente_${Date.now()}@lavanderia.com` }, payment_methods: { excluded_payment_types: [{ id: "ticket" }, { id: "atm" }], installments: 1 }, notification_url: "https://lavanderia-v2.onrender.com/webhook", auto_return: "approved", back_urls: { success: "https://lavanderia-v2.onrender.com/sucesso", failure: "https://lavanderia-v2.onrender.com/erro" } };
-        const response = await axios.post('https://api.mercadopago.com/checkout/preferences', preference, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
-        res.json({ status: 'ok', init_point: response.data.init_point });
-    } catch (e) { res.status(500).json({ error: "Erro MP" }); }
-});
-
-app.post('/api/gerar_pix', async (req, res) => {
-    let { id_maquina, tempo } = req.body;
-    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
-    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Erro" });
-
-    try {
-        const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
-        if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
-        const paymentData = { transaction_amount: parseFloat(dados.preco), description: `Unileve - ${id_maquina}`, payment_method_id: "pix", payer: { email: `c_${Date.now()}@mail.com` }, metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, notification_url: "https://lavanderia-v2.onrender.com/webhook" };
-        const response = await axios.post('https://api.mercadopago.com/v1/payments', paymentData, { headers: { 'Authorization': `Bearer ${config.token_mp}`, 'X-Idempotency-Key': `${id_maquina}-${Date.now()}` } });
-        res.json({ success: true, qr_code_base64: response.data.point_of_interaction.transaction_data.qr_code_base64, qr_code: response.data.point_of_interaction.transaction_data.qr_code });
-    } catch (e) { res.status(500).json({ error: "Erro Pix" }); }
-});
-
-app.post('/webhook', async (req, res) => {
-    let tipoEvento = req.query.type || req.body.type || req.body.action || req.query.topic;
-    if (tipoEvento === 'point_integration_wh') {
-        const info = req.body;
-        if (info.state === 'FINISHED' && info.payment && info.payment.state === 'approved' && info.additional_info && info.additional_info.external_reference) {
-            const partes = info.additional_info.external_reference.split('|');
-            if (partes[0] && partes[1]) executarDisparo(partes[0], partes[1]); 
-        }
-        return res.sendStatus(200);
-    }
-    if (tipoEvento === 'payment' || tipoEvento === 'payment.created') {
-        const idPagamento = (req.body.data && req.body.data.id) ? req.body.data.id : req.query['data.id'];
-        if (idPagamento) {
-            const tokensUnicos = [...new Set(Object.values(CLIENTES).map(c => c.token_mp))];
-            for (const token of tokensUnicos) {
-                try {
-                    const response = await axios.get(`https://api.mercadopago.com/v1/payments/${idPagamento}`, { headers: { 'Authorization': `Bearer ${token}` } });
-                    if (response.data.status === 'approved') {
-                        let maquina = null; let tempo = "45";
-                        if (response.data.metadata && response.data.metadata.maquina) { maquina = response.data.metadata.maquina; tempo = response.data.metadata.tempo_planilha || "45"; } 
-                        else if (response.data.external_reference && response.data.external_reference.includes('|')) { const partes = response.data.external_reference.split('|'); maquina = partes[0]; tempo = partes[1]; }
-                        if (maquina) { executarDisparo(maquina, tempo); return res.sendStatus(200); }
-                    }
-                } catch (err) {}
-            }
-        }
-    }
-    res.sendStatus(200);
-});
-
-app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
-app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
-
 // ==========================================
-// ⏰ O DESPERTADOR INVERTIDO E BRUTAL
+// ⏰ O DESPERTADOR COM MARRETA INVERTIDA E ASSÍNCRONA
 // ==========================================
 setInterval(async () => {
     console.log("[DESPERTADOR] Iniciando rotina de limpeza matinal...");
@@ -499,7 +443,7 @@ setInterval(async () => {
         let config = CLIENTES[id_maquina];
         if (config && config.device_id && !INTENTS_ATIVOS[id_maquina]) {
             try {
-                // 1. PRIMEIRO A MARRETA: Arranca a máquina do menu "Inserir Valor" pra tela azul do PDV
+                // 1. PRIMEIRO A MARRETA: Arranca a máquina do menu "Inserir Valor" pra tela azul do PDV com 5s de respiro
                 console.log(`[DESPERTADOR] Forçando modo PDV na máquina ${id_maquina}...`);
                 await aplicarMarretaExtrema(config.device_id, config.token_mp);
                 
@@ -516,7 +460,7 @@ setInterval(async () => {
             }
         }
     }
-}, 5 * 60 * 1000); // ⚠️ Mantido em 5 min. Quando você testar e vir que a tela mudou sozinha, altere para 3 * 60 * 60 * 1000!
+}, 5 * 60 * 1000); // ⚠️ Deixei em 5 minutos para você ver a transição física na bancada de testes!
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
