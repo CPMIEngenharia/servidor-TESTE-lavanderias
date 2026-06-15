@@ -33,15 +33,29 @@ function getGoogleAuth() {
     });
 }
 
-// 🔥 A MARRETA EXTREMA: Força a limpeza mudando o modo de operação da maquininha
 async function aplicarMarretaExtrema(deviceId, token) {
     try {
         await axios.patch(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}`, { operating_mode: "STANDALONE" }, { headers: { 'Authorization': `Bearer ${token}` } });
-        await new Promise(r => setTimeout(r, 2000)); // Dá 2 segundos para a máquina física processar e limpar a tela
+        await new Promise(r => setTimeout(r, 2000));
         await axios.patch(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}`, { operating_mode: "PDV" }, { headers: { 'Authorization': `Bearer ${token}` } });
         console.log(`[MARRETA EXTREMA] Tela da máquina ${deviceId} destravada e limpa com sucesso!`);
     } catch (e) {
         console.log(`[MARRETA EXTREMA] Falha ao destravar ${deviceId}:`, e.message);
+    }
+}
+
+async function forcarCancelamentoMP(deviceId, intentId, token) {
+    try {
+        await axios.delete(`https://api.mercadopago.com/point/integration-api/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        return true;
+    } catch (e1) {
+        try {
+            await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${token}` } });
+            return true;
+        } catch (e2) {
+            console.log(`[MP BLOQUEOU] Não foi possível cancelar (ON_TERMINAL). O hardware fará o timeout natural.`);
+            return false;
+        }
     }
 }
 
@@ -169,7 +183,6 @@ app.get('/painel', (req, res) => {
         const isSecadora = id.toLowerCase().includes('sec');
         let dadosAtuais = CACHE_DADOS_MAQUINAS[id] || { preco_lavar: "0", preco_secar: "0", tempo: "45", preco_promo: "", dia_promo: "", hora_inicio: "", hora_fim: "" };
         let precoAtivo = isSecadora ? dadosAtuais.preco_secar : dadosAtuais.preco_lavar;
-        
         let txtPromo = "Nenhuma promoção programada.";
         if (dadosAtuais.preco_promo && dadosAtuais.dia_promo) { txtPromo = `<span style="font-size:16px;">R$ ${dadosAtuais.preco_promo}</span><br>${dadosAtuais.dia_promo} | ${dadosAtuais.hora_inicio || "00:00"} às ${dadosAtuais.hora_fim || "23:59"}`; }
 
@@ -249,7 +262,6 @@ app.post('/api/pagar_fisico', async (req, res) => {
     const config = CLIENTES[id_maquina];
     if (!config || !config.device_id) return res.status(400).json({ error: "Máquina não configurada." });
 
-    // Tenta limpar um pagamento anterior que tenha travado
     if (INTENTS_ATIVOS[id_maquina]) {
         try {
             await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${INTENTS_ATIVOS[id_maquina]}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
@@ -261,14 +273,13 @@ app.post('/api/pagar_fisico', async (req, res) => {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero na planilha." });
         
-        // Aplica a Marreta Extrema ANTES de enviar o novo valor para garantir que a tela está limpa
         await aplicarMarretaExtrema(config.device_id, config.token_mp);
 
         const ordemPagamento = { amount: Math.round(parseFloat(dados.preco) * 100), description: `Unileve - ${id_maquina}`, additional_info: { external_reference: `${id_maquina}|${dados.tempo}`, print_on_terminal: false } };
         const response = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemPagamento, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
         INTENTS_ATIVOS[id_maquina] = response.data.id; res.json({ success: true, intent_id: response.data.id });
     } catch (error) { 
-        res.status(500).json({ error: "A maquininha não respondeu. Se ela estiver travada, aperte a SETA DE VOLTAR na maquininha!" }); 
+        res.status(500).json({ error: "A maquininha não respondeu.<br><br>Se ela estiver travada, toque na <b>SETA DE VOLTAR ( &larr; )</b> no canto superior esquerdo da maquininha." }); 
     }
 });
 
@@ -277,20 +288,16 @@ app.post('/api/cancelar_fisico', async (req, res) => {
     const config = CLIENTES[id_maquina]; 
     if (!config) return res.json({ success: false });
     
-    // Tenta cancelar normalmente pela API
     if (INTENTS_ATIVOS[id_maquina]) {
-        try {
-            await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${INTENTS_ATIVOS[id_maquina]}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
-        } catch(e) {}
+        await forcarCancelamentoMP(config.device_id, INTENTS_ATIVOS[id_maquina], config.token_mp);
         delete INTENTS_ATIVOS[id_maquina]; 
     }
     
-    // Força a máquina a sair da tela de cobrança usando o truque do Standalone
     await aplicarMarretaExtrema(config.device_id, config.token_mp);
     res.json({ success: true });
 });
 
-// --- TOTEM (COMPLETAMENTE EM PT-BR) ---
+// --- TOTEM FRONTEND ---
 app.get('/totem/:donoUrl', (req, res) => {
     const donoRequisitado = req.params.donoUrl.toLowerCase();
     let maquinasDaLoja = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono.toLowerCase() === donoRequisitado);
@@ -367,7 +374,7 @@ app.get('/totem/:donoUrl', (req, res) => {
         <div id="tela-cartao" class="tela tela-escura"><div class="box-aviso"><div class="icon-gigante" style="color:#e74c3c;">💳</div><h2 style="color:white;">Vá até a maquininha ao lado!</h2><p id="txt-liberar-cartao">Aproxime ou insira seu cartão para liberar a MÁQUINA.</p><button class="btn-cancelar" onclick="cancelarTransacao()">CANCELAR COMPRA</button></div></div>
         <div id="tela-sucesso" class="tela tela-escura"><div class="box-aviso"><div class="icon-gigante" style="color:#27ae60;">✅</div><h2 style="color:#27ae60; font-size:40px;">Pagamento Aprovado!</h2><p>A sua máquina foi iniciada com sucesso.</p></div></div>
         
-        <div id="modal-alerta"><div class="alerta-box"><div class="icon-gigante">⏳</div><h3 id="alerta-titulo">Aviso</h3><p id="alerta-msg" style="white-space: pre-wrap;">Mensagem</p><button class="alerta-btn" onclick="fecharAlerta()">ENTENDIDO</button></div></div>
+        <div id="modal-alerta"><div class="alerta-box"><div class="icon-gigante">⏳</div><h3 id="alerta-titulo">Aviso</h3><p id="alerta-msg">Mensagem</p><button class="alerta-btn" onclick="fecharAlerta()">ENTENDIDO</button></div></div>
 
         <script>
             let maqAlvo = ''; let nomeExibicao = ''; let tipoAlvo = ''; let tempoAlvo = '';
@@ -375,14 +382,19 @@ app.get('/totem/:donoUrl', (req, res) => {
 
             function mostrarTela(id) { document.querySelectorAll('.tela').forEach(t => t.classList.remove('ativa')); document.getElementById(id).classList.add('ativa'); }
             function voltarInicio() { if(intervaloFisico) clearInterval(intervaloFisico); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-principal'); }
-            function exibirAlerta(titulo, msg) { document.getElementById('alerta-titulo').innerText = titulo; document.getElementById('alerta-msg').innerText = msg; document.getElementById('modal-alerta').style.display = 'flex'; }
+            function exibirAlerta(titulo, msg) { 
+                document.getElementById('alerta-titulo').innerText = titulo; 
+                document.getElementById('alerta-msg').innerHTML = msg; // innerHTML permite usar negrito e quebras de linha reais
+                document.getElementById('modal-alerta').style.display = 'flex'; 
+            }
             function fecharAlerta() { document.getElementById('modal-alerta').style.display = 'none'; voltarInicio(); }
             
             function iniciarCronometro() { 
                 if(timerInatividade) clearTimeout(timerInatividade); 
                 timerInatividade = setTimeout(() => { 
+                    if(intervaloFisico) clearInterval(intervaloFisico); // Para o Radar para ele não atropelar a mensagem
                     fetch('/api/cancelar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo }) });
-                    exibirAlerta("Tempo Esgotado", "Cancelamos a operação por inatividade.\\n\\nSe a maquininha física continuar acesa, por favor, aperte a SETA DE VOLTAR (no canto superior esquerdo da tela) para retornar ao menu principal."); 
+                    exibirAlerta("Tempo Esgotado", "Cancelamos a operação por inatividade.<br><br>Se a maquininha física continuar acesa, por favor, toque na <b>SETA DE VOLTAR ( &larr; )</b> no canto superior esquerdo da tela dela para retornar ao menu principal."); 
                 }, 75000); 
             }
             
@@ -403,7 +415,7 @@ app.get('/totem/:donoUrl', (req, res) => {
                         let resMp = await fetch('/api/verificar_pagamento_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: id }) });
                         let dataMp = await resMp.json();
                         if (dataMp.status === 'APPROVED') { clearInterval(intervaloFisico); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-sucesso'); setTimeout(() => window.location.reload(), 4000); return; } 
-                        else if (dataMp.status === 'REJECTED') { clearInterval(intervaloFisico); exibirAlerta("Cancelado", "A operação foi cancelada na maquininha."); return; }
+                        else if (dataMp.status === 'REJECTED') { clearInterval(intervaloFisico); exibirAlerta("Operação Cancelada", "O pagamento foi cancelado na maquininha."); return; }
                         let res = await fetch('/api/status_geral?t=' + new Date().getTime()); let statusCache = await res.json(); let st = statusCache[id] || "DISPONIVEL"; 
                         if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { clearInterval(intervaloFisico); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-sucesso'); setTimeout(() => window.location.reload(), 4000); } 
                     } catch(e) { } 
