@@ -33,19 +33,15 @@ function getGoogleAuth() {
     });
 }
 
-// 🔥 DUPLA TENTATIVA DE CANCELAMENTO (Fura o bloqueio se possível)
-async function forcarCancelamentoMP(deviceId, intentId, token) {
+// 🔥 A MARRETA EXTREMA: Força a limpeza mudando o modo de operação da maquininha
+async function aplicarMarretaExtrema(deviceId, token) {
     try {
-        await axios.delete(`https://api.mercadopago.com/point/integration-api/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${token}` } });
-        return true;
-    } catch (e1) {
-        try {
-            await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${token}` } });
-            return true;
-        } catch (e2) {
-            console.log(`[MP BLOQUEOU] Não foi possível cancelar o intent remotamente (ON_TERMINAL). O hardware fará o timeout natural.`);
-            return false;
-        }
+        await axios.patch(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}`, { operating_mode: "STANDALONE" }, { headers: { 'Authorization': `Bearer ${token}` } });
+        await new Promise(r => setTimeout(r, 2000)); // Dá 2 segundos para a máquina física processar e limpar a tela
+        await axios.patch(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}`, { operating_mode: "PDV" }, { headers: { 'Authorization': `Bearer ${token}` } });
+        console.log(`[MARRETA EXTREMA] Tela da máquina ${deviceId} destravada e limpa com sucesso!`);
+    } catch (e) {
+        console.log(`[MARRETA EXTREMA] Falha ao destravar ${deviceId}:`, e.message);
     }
 }
 
@@ -253,19 +249,26 @@ app.post('/api/pagar_fisico', async (req, res) => {
     const config = CLIENTES[id_maquina];
     if (!config || !config.device_id) return res.status(400).json({ error: "Máquina não configurada." });
 
+    // Tenta limpar um pagamento anterior que tenha travado
     if (INTENTS_ATIVOS[id_maquina]) {
-        await forcarCancelamentoMP(config.device_id, INTENTS_ATIVOS[id_maquina], config.token_mp);
+        try {
+            await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${INTENTS_ATIVOS[id_maquina]}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
+        } catch(e) {}
         delete INTENTS_ATIVOS[id_maquina];
     }
 
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero na planilha." });
+        
+        // Aplica a Marreta Extrema ANTES de enviar o novo valor para garantir que a tela está limpa
+        await aplicarMarretaExtrema(config.device_id, config.token_mp);
+
         const ordemPagamento = { amount: Math.round(parseFloat(dados.preco) * 100), description: `Unileve - ${id_maquina}`, additional_info: { external_reference: `${id_maquina}|${dados.tempo}`, print_on_terminal: false } };
         const response = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemPagamento, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
         INTENTS_ATIVOS[id_maquina] = response.data.id; res.json({ success: true, intent_id: response.data.id });
     } catch (error) { 
-        res.status(500).json({ error: "A maquininha está ocupada. Aguarde 2 minutos para ela se libertar ou aperte a SETA DE VOLTAR no ecrã dela!" }); 
+        res.status(500).json({ error: "A maquininha não respondeu. Se ela estiver travada, aperte a SETA DE VOLTAR na maquininha!" }); 
     }
 });
 
@@ -274,14 +277,20 @@ app.post('/api/cancelar_fisico', async (req, res) => {
     const config = CLIENTES[id_maquina]; 
     if (!config) return res.json({ success: false });
     
+    // Tenta cancelar normalmente pela API
     if (INTENTS_ATIVOS[id_maquina]) {
-        await forcarCancelamentoMP(config.device_id, INTENTS_ATIVOS[id_maquina], config.token_mp);
+        try {
+            await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${INTENTS_ATIVOS[id_maquina]}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
+        } catch(e) {}
         delete INTENTS_ATIVOS[id_maquina]; 
     }
+    
+    // Força a máquina a sair da tela de cobrança usando o truque do Standalone
+    await aplicarMarretaExtrema(config.device_id, config.token_mp);
     res.json({ success: true });
 });
 
-// --- TOTEM COM OS TEXTOS ATUALIZADOS ---
+// --- TOTEM (COMPLETAMENTE EM PT-BR) ---
 app.get('/totem/:donoUrl', (req, res) => {
     const donoRequisitado = req.params.donoUrl.toLowerCase();
     let maquinasDaLoja = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono.toLowerCase() === donoRequisitado);
@@ -372,8 +381,8 @@ app.get('/totem/:donoUrl', (req, res) => {
             function iniciarCronometro() { 
                 if(timerInatividade) clearTimeout(timerInatividade); 
                 timerInatividade = setTimeout(() => { 
-                    exibirAlerta("Tempo Esgotado", "O Totem foi libertado para o próximo cliente.\\n\\nSe a maquininha ainda estiver acesa, aguarde ela apagar sozinha ou aperte a SETA DE VOLTAR (no canto superior esquerdo da tela) nela."); 
                     fetch('/api/cancelar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo }) });
+                    exibirAlerta("Tempo Esgotado", "Cancelamos a operação por inatividade.\\n\\nSe a maquininha física continuar acesa, por favor, aperte a SETA DE VOLTAR (no canto superior esquerdo da tela) para retornar ao menu principal."); 
                 }, 75000); 
             }
             
@@ -404,6 +413,68 @@ app.get('/totem/:donoUrl', (req, res) => {
     </body></html>`);
 });
 
+app.post('/criar_pagamento', async (req, res) => {
+    let { id_maquina, tempo } = req.body;
+    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
+    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Máquina não configurada" });
+    if (STATUS_CACHE[id_maquina] && STATUS_CACHE[id_maquina].includes('TEMPO:')) return res.status(400).json({ error: "MÁQUINA EM USO." });
+
+    try {
+        const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
+        if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
+        const preference = { items: [{ title: `Ciclo ${dados.tempo}min - ${id_maquina}`, unit_price: parseFloat(dados.preco), quantity: 1, currency_id: 'BRL' }], metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, payer: { email: `cliente_${Date.now()}@lavanderia.com` }, payment_methods: { excluded_payment_types: [{ id: "ticket" }, { id: "atm" }], installments: 1 }, notification_url: "https://lavanderia-v2.onrender.com/webhook", auto_return: "approved", back_urls: { success: "https://lavanderia-v2.onrender.com/sucesso", failure: "https://lavanderia-v2.onrender.com/erro" } };
+        const response = await axios.post('https://api.mercadopago.com/checkout/preferences', preference, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
+        res.json({ status: 'ok', init_point: response.data.init_point });
+    } catch (e) { res.status(500).json({ error: "Erro MP" }); }
+});
+
+app.post('/api/gerar_pix', async (req, res) => {
+    let { id_maquina, tempo } = req.body;
+    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
+    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Erro" });
+
+    try {
+        const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
+        if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
+        const paymentData = { transaction_amount: parseFloat(dados.preco), description: `Unileve - ${id_maquina}`, payment_method_id: "pix", payer: { email: `c_${Date.now()}@mail.com` }, metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, notification_url: "https://lavanderia-v2.onrender.com/webhook" };
+        const response = await axios.post('https://api.mercadopago.com/v1/payments', paymentData, { headers: { 'Authorization': `Bearer ${config.token_mp}`, 'X-Idempotency-Key': `${id_maquina}-${Date.now()}` } });
+        res.json({ success: true, qr_code_base64: response.data.point_of_interaction.transaction_data.qr_code_base64, qr_code: response.data.point_of_interaction.transaction_data.qr_code });
+    } catch (e) { res.status(500).json({ error: "Erro Pix" }); }
+});
+
+app.post('/webhook', async (req, res) => {
+    let tipoEvento = req.query.type || req.body.type || req.body.action || req.query.topic;
+    if (tipoEvento === 'point_integration_wh') {
+        const info = req.body;
+        if (info.state === 'FINISHED' && info.payment && info.payment.state === 'approved' && info.additional_info && info.additional_info.external_reference) {
+            const partes = info.additional_info.external_reference.split('|');
+            if (partes[0] && partes[1]) executarDisparo(partes[0], partes[1]); 
+        }
+        return res.sendStatus(200);
+    }
+    if (tipoEvento === 'payment' || tipoEvento === 'payment.created') {
+        const idPagamento = (req.body.data && req.body.data.id) ? req.body.data.id : req.query['data.id'];
+        if (idPagamento) {
+            const tokensUnicos = [...new Set(Object.values(CLIENTES).map(c => c.token_mp))];
+            for (const token of tokensUnicos) {
+                try {
+                    const response = await axios.get(`https://api.mercadopago.com/v1/payments/${idPagamento}`, { headers: { 'Authorization': `Bearer ${token}` } });
+                    if (response.data.status === 'approved') {
+                        let maquina = null; let tempo = "45";
+                        if (response.data.metadata && response.data.metadata.maquina) { maquina = response.data.metadata.maquina; tempo = response.data.metadata.tempo_planilha || "45"; } 
+                        else if (response.data.external_reference && response.data.external_reference.includes('|')) { const partes = response.data.external_reference.split('|'); maquina = partes[0]; tempo = partes[1]; }
+                        if (maquina) { executarDisparo(maquina, tempo); return res.sendStatus(200); }
+                    }
+                } catch (err) {}
+            }
+        }
+    }
+    res.sendStatus(200);
+});
+
+app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
+app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
+
 // ==========================================
 // ⏰ O DESPERTADOR SAUDÁVEL (A cada 3 horas)
 // ==========================================
@@ -416,7 +487,7 @@ setInterval(async () => {
                 const ordemFantasma = { amount: 100, description: `Despertador`, additional_info: { external_reference: `ping`, print_on_terminal: false } };
                 const resp = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemFantasma, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
                 await new Promise(resolve => setTimeout(resolve, 3000));
-                await forcarCancelamentoMP(config.device_id, resp.data.id, config.token_mp);
+                await axios.delete(`https://api.mercadopago.com/point/integration-api/payment-intents/${resp.data.id}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
             } catch (e) {
                 console.log(`[DESPERTADOR] Falha ao acordar ${id_maquina}. A máquina deve estar OFF ou Ocupada.`);
             }
