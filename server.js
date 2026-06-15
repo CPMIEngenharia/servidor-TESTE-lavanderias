@@ -384,7 +384,7 @@ app.get('/totem/:donoUrl', (req, res) => {
             function voltarInicio() { if(intervaloFisico) clearInterval(intervaloFisico); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-principal'); }
             function exibirAlerta(titulo, msg) { 
                 document.getElementById('alerta-titulo').innerText = titulo; 
-                document.getElementById('alerta-msg').innerHTML = msg; // innerHTML permite usar negrito e quebras de linha reais
+                document.getElementById('alerta-msg').innerHTML = msg; 
                 document.getElementById('modal-alerta').style.display = 'flex'; 
             }
             function fecharAlerta() { document.getElementById('modal-alerta').style.display = 'none'; voltarInicio(); }
@@ -392,7 +392,7 @@ app.get('/totem/:donoUrl', (req, res) => {
             function iniciarCronometro() { 
                 if(timerInatividade) clearTimeout(timerInatividade); 
                 timerInatividade = setTimeout(() => { 
-                    if(intervaloFisico) clearInterval(intervaloFisico); // Para o Radar para ele não atropelar a mensagem
+                    if(intervaloFisico) clearInterval(intervaloFisico); 
                     fetch('/api/cancelar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo }) });
                     exibirAlerta("Tempo Esgotado", "Cancelamos a operação por inatividade.<br><br>Se a maquininha física continuar acesa, por favor, toque na <b>SETA DE VOLTAR ( &larr; )</b> no canto superior esquerdo da tela dela para retornar ao menu principal."); 
                 }, 75000); 
@@ -488,7 +488,6 @@ app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
 app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
 
 // ==========================================
-// ==========================================
 // ⏰ O DESPERTADOR COM LIMPEZA FORÇADA
 // ==========================================
 setInterval(async () => {
@@ -497,17 +496,13 @@ setInterval(async () => {
         let config = CLIENTES[id_maquina];
         if (config && config.device_id && !INTENTS_ATIVOS[id_maquina]) {
             try {
-                // 1. Manda o R$ 1,00 fantasma para forçar a máquina a acender a tela e conectar
                 const ordemFantasma = { amount: 100, description: `Despertador`, additional_info: { external_reference: `ping`, print_on_terminal: false } };
                 const resp = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemFantasma, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
                 
-                // 2. Espera 3 segundos para a máquina processar o susto e levantar o sistema
                 await new Promise(resolve => setTimeout(resolve, 3000));
                 
-                // 3. Tenta limpar o sistema interno do Mercado Pago silenciosamente
                 try { await axios.delete(`https://api.mercadopago.com/point/integration-api/payment-intents/${resp.data.id}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); } catch(e) {}
                 
-                // 4. A MARRETA EXTREMA: Como a máquina levantou o escudo, usamos a força bruta para limpar a tela fisicamente!
                 await aplicarMarretaExtrema(config.device_id, config.token_mp);
                 
             } catch (e) {
@@ -515,7 +510,7 @@ setInterval(async () => {
             }
         }
     }
-}, 5 * 60 * 1000); // ⚠️ Mantivemos 5 minutos para você ver a marreta funcionando!
+}, 5 * 60 * 1000); // ⚠️ Mantido em 5 minutos para teste!
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));ta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
