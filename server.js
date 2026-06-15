@@ -33,12 +33,17 @@ function getGoogleAuth() {
     });
 }
 
+// 🔥 A MARRETA EXTREMA: Arranca a máquina do menu "Inserir Valor" e força o modo PDV
 async function aplicarMarretaExtrema(deviceId, token) {
     try {
         await axios.patch(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}`, { operating_mode: "STANDALONE" }, { headers: { 'Authorization': `Bearer ${token}` } });
         await new Promise(r => setTimeout(r, 2000));
+        
         await axios.patch(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}`, { operating_mode: "PDV" }, { headers: { 'Authorization': `Bearer ${token}` } });
-        console.log(`[MARRETA EXTREMA] Tela da máquina ${deviceId} destravada e limpa com sucesso!`);
+        // ⏱️ TEMPO CRÍTICO: Dá 3.5 segundos para a interface do Android mudar fisicamente de tela
+        await new Promise(r => setTimeout(r, 3500)); 
+        
+        console.log(`[MARRETA EXTREMA] Tela da máquina ${deviceId} forçada para o modo PDV!`);
     } catch (e) {
         console.log(`[MARRETA EXTREMA] Falha ao destravar ${deviceId}:`, e.message);
     }
@@ -183,6 +188,7 @@ app.get('/painel', (req, res) => {
         const isSecadora = id.toLowerCase().includes('sec');
         let dadosAtuais = CACHE_DADOS_MAQUINAS[id] || { preco_lavar: "0", preco_secar: "0", tempo: "45", preco_promo: "", dia_promo: "", hora_inicio: "", hora_fim: "" };
         let precoAtivo = isSecadora ? dadosAtuais.preco_secar : dadosAtuais.preco_lavar;
+        
         let txtPromo = "Nenhuma promoção programada.";
         if (dadosAtuais.preco_promo && dadosAtuais.dia_promo) { txtPromo = `<span style="font-size:16px;">R$ ${dadosAtuais.preco_promo}</span><br>${dadosAtuais.dia_promo} | ${dadosAtuais.hora_inicio || "00:00"} às ${dadosAtuais.hora_fim || "23:59"}`; }
 
@@ -257,29 +263,26 @@ app.post('/api/verificar_pagamento_fisico', async (req, res) => {
     }
 });
 
+// AQUI ESTÁ A OTIMIZAÇÃO DO CLIENTE: O comando de limpar a tela anterior roda invisível SEM bloquear o novo cliente!
 app.post('/api/pagar_fisico', async (req, res) => {
     let { id_maquina, tempo } = req.body; 
     const config = CLIENTES[id_maquina];
     if (!config || !config.device_id) return res.status(400).json({ error: "Máquina não configurada." });
 
     if (INTENTS_ATIVOS[id_maquina]) {
-        try {
-            await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${INTENTS_ATIVOS[id_maquina]}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
-        } catch(e) {}
+        forcarCancelamentoMP(config.device_id, INTENTS_ATIVOS[id_maquina], config.token_mp); // Não tem 'await' para não atrasar o cliente
         delete INTENTS_ATIVOS[id_maquina];
     }
 
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero na planilha." });
-        
-        await aplicarMarretaExtrema(config.device_id, config.token_mp);
 
         const ordemPagamento = { amount: Math.round(parseFloat(dados.preco) * 100), description: `Unileve - ${id_maquina}`, additional_info: { external_reference: `${id_maquina}|${dados.tempo}`, print_on_terminal: false } };
         const response = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemPagamento, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
         INTENTS_ATIVOS[id_maquina] = response.data.id; res.json({ success: true, intent_id: response.data.id });
     } catch (error) { 
-        res.status(500).json({ error: "A maquininha não respondeu.<br><br>Se ela estiver travada, toque na <b>SETA DE VOLTAR ( &larr; )</b> no canto superior esquerdo da maquininha." }); 
+        res.status(500).json({ error: "A maquininha não respondeu.<br><br>Se ela estiver travada ou na tela inicial, toque na <b>SETA DE VOLTAR ( &larr; )</b> nela e tente novamente." }); 
     }
 });
 
@@ -293,7 +296,7 @@ app.post('/api/cancelar_fisico', async (req, res) => {
         delete INTENTS_ATIVOS[id_maquina]; 
     }
     
-    await aplicarMarretaExtrema(config.device_id, config.token_mp);
+    await aplicarMarretaExtrema(config.device_id, config.token_mp); // Força a tela de volta pro PDV
     res.json({ success: true });
 });
 
@@ -488,29 +491,32 @@ app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
 app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
 
 // ==========================================
-// ⏰ O DESPERTADOR COM LIMPEZA FORÇADA
+// ⏰ O DESPERTADOR INVERTIDO E BRUTAL
 // ==========================================
 setInterval(async () => {
-    console.log("[DESPERTADOR] Acordando máquinas...");
+    console.log("[DESPERTADOR] Iniciando rotina de limpeza matinal...");
     for (let id_maquina in CLIENTES) {
         let config = CLIENTES[id_maquina];
         if (config && config.device_id && !INTENTS_ATIVOS[id_maquina]) {
             try {
+                // 1. PRIMEIRO A MARRETA: Arranca a máquina do menu "Inserir Valor" pra tela azul do PDV
+                console.log(`[DESPERTADOR] Forçando modo PDV na máquina ${id_maquina}...`);
+                await aplicarMarretaExtrema(config.device_id, config.token_mp);
+                
+                // 2. SÓ DEPOIS dispara o R$ 1,00 para garantir que ela acende sem travar no fundo
                 const ordemFantasma = { amount: 100, description: `Despertador`, additional_info: { external_reference: `ping`, print_on_terminal: false } };
                 const resp = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemFantasma, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
                 
+                // 3. Espera 3s e apaga a tela de R$ 1,00
                 await new Promise(resolve => setTimeout(resolve, 3000));
-                
                 try { await axios.delete(`https://api.mercadopago.com/point/integration-api/payment-intents/${resp.data.id}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); } catch(e) {}
-                
-                await aplicarMarretaExtrema(config.device_id, config.token_mp);
                 
             } catch (e) {
                 console.log(`[DESPERTADOR] Falha ao acordar ${id_maquina}. A máquina deve estar OFF ou Ocupada.`);
             }
         }
     }
-}, 5 * 60 * 1000); // ⚠️ Mantido em 5 minutos para teste!
+}, 5 * 60 * 1000); // ⚠️ Mantido em 5 min. Quando você testar e vir que a tela mudou sozinha, altere para 3 * 60 * 60 * 1000!
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
