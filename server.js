@@ -488,24 +488,34 @@ app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
 app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
 
 // ==========================================
-// ⏰ O DESPERTADOR SAUDÁVEL (A cada 3 horas)
+// ==========================================
+// ⏰ O DESPERTADOR COM LIMPEZA FORÇADA
 // ==========================================
 setInterval(async () => {
-    console.log("[DESPERTADOR] Iniciando rotina para acordar maquininhas (3 Horas)...");
+    console.log("[DESPERTADOR] Acordando máquinas...");
     for (let id_maquina in CLIENTES) {
         let config = CLIENTES[id_maquina];
         if (config && config.device_id && !INTENTS_ATIVOS[id_maquina]) {
             try {
+                // 1. Manda o R$ 1,00 fantasma para forçar a máquina a acender a tela e conectar
                 const ordemFantasma = { amount: 100, description: `Despertador`, additional_info: { external_reference: `ping`, print_on_terminal: false } };
                 const resp = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemFantasma, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
+                
+                // 2. Espera 3 segundos para a máquina processar o susto e levantar o sistema
                 await new Promise(resolve => setTimeout(resolve, 3000));
-                await axios.delete(`https://api.mercadopago.com/point/integration-api/payment-intents/${resp.data.id}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
+                
+                // 3. Tenta limpar o sistema interno do Mercado Pago silenciosamente
+                try { await axios.delete(`https://api.mercadopago.com/point/integration-api/payment-intents/${resp.data.id}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); } catch(e) {}
+                
+                // 4. A MARRETA EXTREMA: Como a máquina levantou o escudo, usamos a força bruta para limpar a tela fisicamente!
+                await aplicarMarretaExtrema(config.device_id, config.token_mp);
+                
             } catch (e) {
                 console.log(`[DESPERTADOR] Falha ao acordar ${id_maquina}. A máquina deve estar OFF ou Ocupada.`);
             }
         }
     }
-}, 5 * 60 * 1000); // ⚠️ Roda a cada 5 minutos para teste!
+}, 5 * 60 * 1000); // ⚠️ Mantivemos 5 minutos para você ver a marreta funcionando!
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));ta ${PORT}`));
