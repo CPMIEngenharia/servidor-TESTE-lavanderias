@@ -33,15 +33,19 @@ function getGoogleAuth() {
     });
 }
 
-// 🔥 A MARRETA EXTREMA: Força a limpeza mudando o modo de operação da máquina
-async function aplicarMarretaExtrema(deviceId, token) {
+// 🔥 DUPLA TENTATIVA DE CANCELAMENTO (Fura o bloqueio se possível)
+async function forcarCancelamentoMP(deviceId, intentId, token) {
     try {
-        await axios.patch(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}`, { operating_mode: "STANDALONE" }, { headers: { 'Authorization': `Bearer ${token}` } });
-        await new Promise(r => setTimeout(r, 1500));
-        await axios.patch(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}`, { operating_mode: "PDV" }, { headers: { 'Authorization': `Bearer ${token}` } });
-        console.log(`[MARRETA EXTREMA] Tela da máquina ${deviceId} destravada e limpa com sucesso!`);
-    } catch (e) {
-        console.log(`[MARRETA EXTREMA] Falha ao destravar ${deviceId}:`, e.message);
+        await axios.delete(`https://api.mercadopago.com/point/integration-api/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        return true;
+    } catch (e1) {
+        try {
+            await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${token}` } });
+            return true;
+        } catch (e2) {
+            console.log(`[MP BLOQUEOU] Não foi possível cancelar o intent remotamente (ON_TERMINAL). O hardware fará o timeout natural.`);
+            return false;
+        }
     }
 }
 
@@ -85,7 +89,6 @@ async function sincronizarPrecosPlanilhas() {
             for (let i = 1; i < linhas.length; i++) {
                 let idMaq = linhas[i][0];
                 if (!idMaq) continue; idMaq = idMaq.trim();
-                
                 let pLavar = colLavar !== -1 && linhas[i][colLavar] ? linhas[i][colLavar].toString().replace('R$', '').replace(',', '.').trim() : "0";
                 let pSecar = colSecar !== -1 && linhas[i][colSecar] ? linhas[i][colSecar].toString().replace('R$', '').replace(',', '.').trim() : "0";
                 let tCiclo = colTempo !== -1 && linhas[i][colTempo] ? linhas[i][colTempo].toString().trim() : "45";
@@ -93,7 +96,6 @@ async function sincronizarPrecosPlanilhas() {
                 let dPromo = colDiaPromo !== -1 && linhas[i][colDiaPromo] ? linhas[i][colDiaPromo].toString().trim() : "";
                 let hInicio = colHoraInicio !== -1 && linhas[i][colHoraInicio] ? linhas[i][colHoraInicio].toString().trim() : "";
                 let hFim = colHoraFim !== -1 && linhas[i][colHoraFim] ? linhas[i][colHoraFim].toString().trim() : "";
-
                 CACHE_DADOS_MAQUINAS[idMaq] = { preco_lavar: pLavar, preco_secar: pSecar, tempo: tCiclo, preco_promo: pPromo, dia_promo: dPromo, hora_inicio: hInicio, hora_fim: hFim };
             }
         } catch (err) {}
@@ -173,9 +175,7 @@ app.get('/painel', (req, res) => {
         let precoAtivo = isSecadora ? dadosAtuais.preco_secar : dadosAtuais.preco_lavar;
         
         let txtPromo = "Nenhuma promoção programada.";
-        if (dadosAtuais.preco_promo && dadosAtuais.dia_promo) {
-            txtPromo = `<span style="font-size:16px;">R$ ${dadosAtuais.preco_promo}</span><br>${dadosAtuais.dia_promo} | ${dadosAtuais.hora_inicio || "00:00"} às ${dadosAtuais.hora_fim || "23:59"}`;
-        }
+        if (dadosAtuais.preco_promo && dadosAtuais.dia_promo) { txtPromo = `<span style="font-size:16px;">R$ ${dadosAtuais.preco_promo}</span><br>${dadosAtuais.dia_promo} | ${dadosAtuais.hora_inicio || "00:00"} às ${dadosAtuais.hora_fim || "23:59"}`; }
 
         let botaoCicloNormal = "";
         if (isSecadora) {
@@ -192,32 +192,7 @@ app.get('/painel', (req, res) => {
                 <div style="flex:1; background:#d4edda; color:#155724; padding:8px; border-radius:4px; font-size:14px; font-weight:bold;">💰 Atual: R$ ${precoAtivo}</div>
                 <div style="flex:1; background:#d1ecf1; color:#0c5460; padding:8px; border-radius:4px; font-size:14px; font-weight:bold;">⏱️ Ciclo: ${dadosAtuais.tempo} min</div>
             </div>
-            <div style="margin-top:8px; background:#fff3cd; color:#856404; padding:8px; border-radius:4px; font-size:13px; border: 1px solid #ffeeba; text-align:center;">
-                <b>🎉 Promoção Programada:</b><br><span style="font-weight:normal;">${txtPromo}</span>
-            </div>
-            <div style="margin-top:15px; padding:10px; background:#f8f9fa; border-radius:8px; border:1px solid #ddd; text-align:left;">
-                <p style="font-size:12px; margin:0 0 5px 0; color:#333; font-weight:bold;">📝 Mudar Configuração Padrão:</p>
-                <div style="display:flex; gap:5px; margin-bottom:10px;">
-                    <input type="text" id="preco-${id}" placeholder="Preço Padrão" style="flex:1; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
-                    <input type="number" id="tempo-${id}" placeholder="Tempo (Min)" style="flex:1; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
-                </div>
-                <p style="font-size:12px; margin:0 0 5px 0; color:#e67e22; font-weight:bold;">🎉 Configurar Novo Happy Hour:</p>
-                <div style="display:flex; gap:5px; margin-bottom:5px;">
-                    <input type="text" id="preco_promo-${id}" placeholder="Preço Promo" style="flex:1; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
-                    <input type="text" id="dia_promo-${id}" placeholder="Dias" style="flex:1; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
-                </div>
-                <div style="display:flex; gap:5px;">
-                    <div style="flex:1; display:flex; flex-direction:column;"><label style="font-size:10px; color:#7f8c8d; font-weight:bold; margin-bottom:2px;">Hora Início:</label><input type="time" id="hora_inicio-${id}" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;"></div>
-                    <div style="flex:1; display:flex; flex-direction:column;"><label style="font-size:10px; color:#7f8c8d; font-weight:bold; margin-bottom:2px;">Hora Fim:</label><input type="time" id="hora_fim-${id}" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;"></div>
-                </div>
-                <button onclick="salvarPlanilha('${id}')" style="width:100%; margin-top:12px; background:#2c3e50; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; cursor:pointer;">💾 SALVAR PLANILHA</button>
-                <button onclick="encerrarPromo('${id}')" style="width:100%; margin-top:5px; background:#e74c3c; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; cursor:pointer;">❌ ENCERRAR PROMOÇÃO</button>
-            </div>
             <div style="margin-top:15px;">${botaoCicloNormal}</div>
-            <div style="margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:5px;">
-                <button onclick="acionar('${id}', 'CMD_FORCA_LIGA')" style="background:#8e44ad; color:white; border:none; padding:8px; border-radius:4px; font-size:12px; cursor:pointer;">⚙️ FORÇAR LIGA</button>
-                <button onclick="acionar('${id}', 'CMD_FORCA_START')" style="background:#f1c40f; color:#333; border:none; padding:8px; border-radius:4px; font-size:12px; font-weight:bold; cursor:pointer;">⚙️ FORÇAR START</button>
-            </div>
             <button onclick="acionar('${id}', 'CMD_RESET')" style="width:100%; margin-top:8px; background:#c0392b; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; cursor:pointer;">🚨 RESET DE EMERGÊNCIA</button>
         </div>`;
     }).join('');
@@ -227,15 +202,6 @@ app.get('/painel', (req, res) => {
         <hr>${htmlCards}
         <script>
         function acionar(id, cmd){ if(confirm('Enviar '+cmd+' para '+id+'?')) fetch('/api/acionar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,cmd})}).then(r=>r.json()).then(d=>alert(d.success?'Comando Enviado!':'Erro')) }
-        function salvarPlanilha(id) {
-            const preco = document.getElementById('preco-'+id).value, tempo = document.getElementById('tempo-'+id).value, preco_promo = document.getElementById('preco_promo-'+id).value, dia_promo = document.getElementById('dia_promo-'+id).value, hora_inicio = document.getElementById('hora_inicio-'+id).value, hora_fim = document.getElementById('hora_fim-'+id).value;
-            if(!preco && !tempo && !preco_promo && !dia_promo && !hora_inicio && !hora_fim) return alert('Preencha algo!');
-            fetch('/api/atualizar_planilha', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ id_maquina: id, preco, tempo, preco_promo, dia_promo, hora_inicio, hora_fim }) })
-            .then(r => r.json()).then(d => { if(d.success) { alert('✅ Salvo!'); window.location.reload(); } else alert('❌ Erro'); });
-        }
-        function encerrarPromo(id) {
-            if(confirm('Encerrar promoção e voltar ao preço normal?')) fetch('/api/atualizar_planilha', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ id_maquina: id, limpar_promo: true }) }).then(r => r.json()).then(d => { if(d.success) { alert('🗑️ Promoção Encerrada!'); window.location.reload(); } });
-        }
         setInterval(() => { fetch('/api/status_geral').then(res => res.json()).then(dados => {
             for (let id in dados) {
                 let badge = document.getElementById('badge-'+id); let statusBox = document.getElementById('status-texto-'+id);
@@ -246,54 +212,11 @@ app.get('/painel', (req, res) => {
     </body></html>`);
 });
 
-app.post('/api/atualizar_planilha', async (req, res) => {
-    const dono = req.cookies.dono; const { id_maquina, preco, tempo, preco_promo, dia_promo, hora_inicio, hora_fim, limpar_promo } = req.body;
-    if (!dono || !CLIENTES[id_maquina] || CLIENTES[id_maquina].dono !== dono) return res.status(403).json({ error: "Proibido" });
-    try {
-        const sheetId = CLIENTES[id_maquina].sheet_id; const auth = getGoogleAuth(); const sheets = google.sheets({ version: 'v4', auth });
-        const response = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'A:Z' });
-        const linhas = response.data.values; const cabecalho = linhas[0];
-        const linhaIndex = linhas.findIndex(l => l[0] && l[0].trim() === id_maquina.trim());
-        if (linhaIndex === -1) return res.status(404).json({ error: "Máquina não achada" });
-
-        const rowNumber = linhaIndex + 1; 
-        const colPrecoIndex = cabecalho.findIndex(c => c && c.trim() === 'Preço Padrão');
-        const colTempoIndex = cabecalho.findIndex(c => c && (c.trim() === 'Tempo do Ciclo' || c.trim() === 'Tempo Padrão'));
-        const colPrecoPromoIndex = cabecalho.findIndex(c => c && c.trim() === 'Preço Promoção');
-        const colDiaPromoIndex = cabecalho.findIndex(c => c && c.trim() === 'Dia da Promoção');
-        const colHoraInicioIndex = cabecalho.findIndex(c => c && c.trim() === 'Hora Início');
-        const colHoraFimIndex = cabecalho.findIndex(c => c && c.trim() === 'Hora Fim');
-
-        async function atualizar(idx, val) { if (val && val !== "" && idx !== -1) await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${getColLetter(idx)}${rowNumber}`, valueInputOption: 'USER_ENTERED', requestBody: { values: [[val]] } }); }
-        async function limpar(idx) { if (idx !== -1) await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${getColLetter(idx)}${rowNumber}`, valueInputOption: 'USER_ENTERED', requestBody: { values: [[""]] } }); }
-
-        if (limpar_promo) {
-            await limpar(colPrecoPromoIndex); await limpar(colDiaPromoIndex); await limpar(colHoraInicioIndex); await limpar(colHoraFimIndex);
-        } else {
-            await atualizar(colPrecoIndex, preco); await atualizar(colTempoIndex, tempo); await atualizar(colPrecoPromoIndex, preco_promo); await atualizar(colDiaPromoIndex, dia_promo); await atualizar(colHoraInicioIndex, hora_inicio); await atualizar(colHoraFimIndex, hora_fim);
-        }
-        setTimeout(sincronizarPrecosPlanilhas, 1000);
-        res.json({ success: true });
-    } catch(e) { res.status(500).json({ error: "Erro Planilha" }); }
-});
-
+app.post('/api/atualizar_planilha', async (req, res) => { res.json({ success: true }); });
 app.get('/api/status_geral', (req, res) => { res.json(STATUS_CACHE); });
-app.post('/login', async (req, res) => {
-    const nomeDono = await autenticarUsuarioNaPlanilha(req.body.usuario, req.body.senha);
-    if (nomeDono) { res.cookie('dono', nomeDono, { httpOnly: true, maxAge: 86400000 }); res.redirect('/painel'); } else res.send(`Incorreto. <a href="/painel">Voltar</a>`);
-});
-app.get('/logout', (req, res) => { 
-    res.clearCookie('dono', { path: '/' }); res.clearCookie('dono'); 
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); res.setHeader('Pragma', 'no-cache'); res.setHeader('Expires', '0');
-    res.send(`<script>window.location.href = '/painel';</script>`); 
-});
-app.post('/api/acionar', (req, res) => {
-    const dono = req.cookies.dono; const { id, cmd } = req.body;
-    if (!dono || !CLIENTES[id] || CLIENTES[id].dono !== dono) return res.status(403).json({ error: "Proibido" });
-    if (cmd.includes('SECAR:')) { let tempoParaSecar = cmd.split(':')[1]; executarDisparo(id, tempoParaSecar); } 
-    else { mqttClient.publish(`lavanderia/${id}/comandos`, cmd, { qos: 1 }); }
-    res.json({ success: true });
-});
+app.post('/login', async (req, res) => { const nomeDono = await autenticarUsuarioNaPlanilha(req.body.usuario, req.body.senha); if (nomeDono) { res.cookie('dono', nomeDono, { httpOnly: true, maxAge: 86400000 }); res.redirect('/painel'); } else res.send(`Incorreto. <a href="/painel">Voltar</a>`); });
+app.get('/logout', (req, res) => { res.clearCookie('dono'); res.redirect('/painel'); });
+app.post('/api/acionar', (req, res) => { const { id, cmd } = req.body; if (cmd.includes('SECAR:')) { executarDisparo(id, cmd.split(':')[1]); } else { mqttClient.publish(`lavanderia/${id}/comandos`, cmd, { qos: 1 }); } res.json({ success: true }); });
 
 app.post('/api/verificar_pagamento_fisico', async (req, res) => {
     const { id_maquina } = req.body;
@@ -303,13 +226,9 @@ app.post('/api/verificar_pagamento_fisico', async (req, res) => {
     if (!config || !intentId) return res.json({ status: 'NONE' });
 
     try {
-        const response = await axios.get(`https://api.mercadopago.com/point/integration-api/payment-intents/${intentId}`, {
-            headers: { 'Authorization': `Bearer ${config.token_mp}` }
-        });
-
+        const response = await axios.get(`https://api.mercadopago.com/point/integration-api/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
         const estado = response.data.state;
-        console.log(`[RADAR] Status da maquininha para ${id_maquina}: ${estado}`);
-
+        
         if (estado === 'FINISHED') {
             delete INTENTS_ATIVOS[id_maquina]; 
             let tempo = '45'; 
@@ -325,25 +244,17 @@ app.post('/api/verificar_pagamento_fisico', async (req, res) => {
         }
         res.json({ status: 'PENDING' });
     } catch (e) {
-        console.log("Erro interno no Radar:", e.message);
         res.json({ status: 'ERROR' });
     }
 });
 
-// --- ROTA DE PAGAR COM A MARRETA EXTREMA NO FALLBACK ---
 app.post('/api/pagar_fisico', async (req, res) => {
     let { id_maquina, tempo } = req.body; 
     const config = CLIENTES[id_maquina];
     if (!config || !config.device_id) return res.status(400).json({ error: "Máquina não configurada." });
 
     if (INTENTS_ATIVOS[id_maquina]) {
-        try {
-            await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${INTENTS_ATIVOS[id_maquina]}`, {
-                headers: { 'Authorization': `Bearer ${config.token_mp}` }
-            });
-        } catch (e) {
-            await aplicarMarretaExtrema(config.device_id, config.token_mp);
-        }
+        await forcarCancelamentoMP(config.device_id, INTENTS_ATIVOS[id_maquina], config.token_mp);
         delete INTENTS_ATIVOS[id_maquina];
     }
 
@@ -354,40 +265,23 @@ app.post('/api/pagar_fisico', async (req, res) => {
         const response = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemPagamento, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
         INTENTS_ATIVOS[id_maquina] = response.data.id; res.json({ success: true, intent_id: response.data.id });
     } catch (error) { 
-        // Se a maquininha estiver suja com um ID que não sabíamos, tentamos a Marreta Extrema para o próximo cliente conseguir
-        await aplicarMarretaExtrema(config.device_id, config.token_mp);
-        res.status(500).json({ error: "Maquininha travada. Destravamento automático acionado. Tente novamente!" }); 
+        res.status(500).json({ error: "A maquininha está ocupada. Aguarde 2 minutos para ela se libertar ou aperte a SETA DE VOLTAR no ecrã dela!" }); 
     }
 });
 
-// --- ROTA DE CANCELAR COM A MARRETA EXTREMA ---
 app.post('/api/cancelar_fisico', async (req, res) => {
     const { id_maquina } = req.body; 
     const config = CLIENTES[id_maquina]; 
     if (!config) return res.json({ success: false });
     
     if (INTENTS_ATIVOS[id_maquina]) {
-        try { 
-            await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${INTENTS_ATIVOS[id_maquina]}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); 
-        } catch (e) {
-            await aplicarMarretaExtrema(config.device_id, config.token_mp);
-        }
+        await forcarCancelamentoMP(config.device_id, INTENTS_ATIVOS[id_maquina], config.token_mp);
         delete INTENTS_ATIVOS[id_maquina]; 
-    } else {
-        // Se deu "Tempo Esgotado" mas o servidor perdeu a memória, usa a Marreta Extrema diretamente!
-        await aplicarMarretaExtrema(config.device_id, config.token_mp);
     }
     res.json({ success: true });
 });
 
-app.get('/limpar-fila/:id_maquina', async (req, res) => {
-    const id = req.params.id_maquina; const config = CLIENTES[id];
-    if (!config || !config.device_id) return res.send("Máquina sem DEVICE_ID");
-    await aplicarMarretaExtrema(config.device_id, config.token_mp);
-    res.send("<h2 style='color:green;'>✅ Fila e Maquininha Limpas com Força Bruta!</h2>");
-});
-
-// --- TOTEM ---
+// --- TOTEM COM OS TEXTOS ATUALIZADOS ---
 app.get('/totem/:donoUrl', (req, res) => {
     const donoRequisitado = req.params.donoUrl.toLowerCase();
     let maquinasDaLoja = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono.toLowerCase() === donoRequisitado);
@@ -453,8 +347,6 @@ app.get('/totem/:donoUrl', (req, res) => {
         .btn-pagamento p { margin: 0; font-size: 14px; opacity: 0.9; }
         .btn-cancelar { background: transparent; border: 2px solid #7f8c8d; color: #bdc3c7; width: 100%; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; margin-top: 20px; cursor: pointer; }
         .box-branca { background: white; padding: 20px; border-radius: 15px; display: inline-block; margin: 20px 0; }
-        .spinner { border: 4px solid rgba(255,255,255,0.3); border-radius: 50%; border-top: 4px solid #f1c40f; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 20px auto; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         #modal-alerta { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999; justify-content: center; align-items: center; }
         .alerta-box { background: white; padding: 30px; border-radius: 15px; text-align: center; max-width: 400px; color: #2c3e50; }
         .alerta-box h3 { color: #e74c3c; margin-top: 0; font-size: 24px; }
@@ -464,33 +356,34 @@ app.get('/totem/:donoUrl', (req, res) => {
         <div id="tela-atencao" class="tela tela-escura"><div class="box-aviso"><div class="icon-gigante">👕</div><h2>ATENÇÃO</h2><p id="txt-pergunta-roupa">Você já colocou as roupas na MÁQUINA e fechou a porta?</p><div class="alerta-vermelho">⚠️ Após o pagamento aprovado, a máquina iniciará automaticamente.</div><div class="grid-2"><button class="btn-acao btn-vermelho" onclick="voltarInicio()">NÃO, VOU COLOCAR</button><button class="btn-acao btn-verde" onclick="mostrarPagamento()">SIM, JÁ COLOQUEI!</button></div></div></div>
         <div id="tela-pagamento" class="tela tela-escura"><div class="box-aviso"><h2 style="color:white; margin-bottom:40px;">Como deseja pagar?</h2><button class="btn-pagamento cartao" onclick="pagarCartao()"><h3>💳 CARTÃO</h3><p>Na maquininha ao lado</p></button><button class="btn-pagamento pix" onclick="pagarPix()"><h3>🟢 PIX</h3><p>Ler QR Code nesta tela</p></button><button class="btn-cancelar" onclick="voltarInicio()">CANCELAR</button></div></div>
         <div id="tela-cartao" class="tela tela-escura"><div class="box-aviso"><div class="icon-gigante" style="color:#e74c3c;">💳</div><h2 style="color:white;">Vá até a maquininha ao lado!</h2><p id="txt-liberar-cartao">Aproxime ou insira seu cartão para liberar a MÁQUINA.</p><button class="btn-cancelar" onclick="cancelarTransacao()">CANCELAR COMPRA</button></div></div>
-        <div id="tela-pix" class="tela tela-escura"><div class="box-aviso"><h2 style="color:#2ecc71;">Pague com PIX</h2><p>Abra o app do seu banco e escaneie o código abaixo:</p><div id="loading-pix"><div class="spinner"></div><p>Gerando código PIX...</p></div><div id="area-qrcode" style="display:none;"><div class="box-branca"><img id="imgPix" src="" style="width:250px; height:250px; display:block;" /></div><p style="color:#f1c40f; font-size:16px;">A máquina iniciará automaticamente após o pagamento.</p></div><button class="btn-cancelar" onclick="voltarInicio()">CANCELAR COMPRA</button></div></div>
         <div id="tela-sucesso" class="tela tela-escura"><div class="box-aviso"><div class="icon-gigante" style="color:#27ae60;">✅</div><h2 style="color:#27ae60; font-size:40px;">Pagamento Aprovado!</h2><p>A sua máquina foi iniciada com sucesso.</p></div></div>
-        <div id="modal-alerta"><div class="alerta-box"><div class="icon-gigante">⏳</div><h3 id="alerta-titulo">Tempo Esgotado</h3><p id="alerta-msg">A transação foi cancelada por inatividade. A máquina já está libertada para a próxima pessoa.</p><button class="alerta-btn" onclick="fecharAlerta()">ENTENDIDO</button></div></div>
+        
+        <div id="modal-alerta"><div class="alerta-box"><div class="icon-gigante">⏳</div><h3 id="alerta-titulo">Aviso</h3><p id="alerta-msg" style="white-space: pre-wrap;">Mensagem</p><button class="alerta-btn" onclick="fecharAlerta()">ENTENDIDO</button></div></div>
 
         <script>
             let maqAlvo = ''; let nomeExibicao = ''; let tipoAlvo = ''; let tempoAlvo = '';
-            let intervaloFisico = null; let intervaloPix = null;
-            let timerInatividade = null; 
+            let intervaloFisico = null; let timerInatividade = null; 
 
             function mostrarTela(id) { document.querySelectorAll('.tela').forEach(t => t.classList.remove('ativa')); document.getElementById(id).classList.add('ativa'); }
-            function voltarInicio() { if(intervaloFisico) clearInterval(intervaloFisico); if(intervaloPix) clearInterval(intervaloPix); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-principal'); }
+            function voltarInicio() { if(intervaloFisico) clearInterval(intervaloFisico); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-principal'); }
             function exibirAlerta(titulo, msg) { document.getElementById('alerta-titulo').innerText = titulo; document.getElementById('alerta-msg').innerText = msg; document.getElementById('modal-alerta').style.display = 'flex'; }
-            function fecharAlerta() { document.getElementById('modal-alerta').style.display = 'none'; }
-            function iniciarCronometro() { if(timerInatividade) clearTimeout(timerInatividade); timerInatividade = setTimeout(() => { exibirAlerta("Tempo Esgotado", "Cancelámos a operação por inatividade para libertar o Totem."); cancelarTransacao(); }, 75000); }
+            function fecharAlerta() { document.getElementById('modal-alerta').style.display = 'none'; voltarInicio(); }
+            
+            function iniciarCronometro() { 
+                if(timerInatividade) clearTimeout(timerInatividade); 
+                timerInatividade = setTimeout(() => { 
+                    exibirAlerta("Tempo Esgotado", "O Totem foi libertado para o próximo cliente.\\n\\nSe a maquininha ainda estiver acesa, aguarde ela apagar sozinha ou aperte a SETA DE VOLTAR (no canto superior esquerdo da tela) nela."); 
+                    fetch('/api/cancelar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo }) });
+                }, 75000); 
+            }
+            
             function iniciarFluxo(id, numero, tipo) { maqAlvo = id; tipoAlvo = tipo; nomeExibicao = (tipo === 'secar' ? 'SECADORA ' : 'LAVADORA ') + numero; tempoAlvo = (tipo === 'secar') ? 'preco_secar' : 'preco_45'; document.getElementById('txt-pergunta-roupa').innerText = 'Você já colocou as roupas na ' + nomeExibicao + ' e fechou a porta?'; document.getElementById('txt-liberar-cartao').innerText = 'Aproxime ou insira seu cartão para liberar a ' + nomeExibicao + '.'; mostrarTela('tela-atencao'); }
             function mostrarPagamento() { mostrarTela('tela-pagamento'); }
 
             function pagarCartao() {
                 mostrarTela('tela-cartao');
                 fetch('/api/pagar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo, tempo: tempoAlvo }) })
-                .then(r => r.json()).then(d => { if(d.error) { exibirAlerta("Aviso", d.error); voltarInicio(); } else { iniciarRadarMaquininha(maqAlvo); iniciarCronometro(); } }).catch(e => voltarInicio());
-            }
-
-            function pagarPix() {
-                mostrarTela('tela-pix'); document.getElementById('loading-pix').style.display = 'block'; document.getElementById('area-qrcode').style.display = 'none';
-                fetch('/api/gerar_pix', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id_maquina: maqAlvo, tempo: tempoAlvo}) })
-                .then(r => r.json()).then(d => { if (d.success) { document.getElementById('loading-pix').style.display = 'none'; document.getElementById('area-qrcode').style.display = 'block'; document.getElementById('imgPix').src = "data:image/jpeg;base64," + d.qr_code_base64; iniciarRadarPix(maqAlvo); iniciarCronometro(); } else { exibirAlerta("Erro", "Erro ao gerar PIX."); voltarInicio(); } }).catch(e => voltarInicio());
+                .then(r => r.json()).then(d => { if(d.error) { exibirAlerta("Aviso", d.error); } else { iniciarRadarMaquininha(maqAlvo); iniciarCronometro(); } }).catch(e => voltarInicio());
             }
 
             function cancelarTransacao() { fetch('/api/cancelar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo }) }); voltarInicio(); }
@@ -501,111 +394,35 @@ app.get('/totem/:donoUrl', (req, res) => {
                         let resMp = await fetch('/api/verificar_pagamento_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: id }) });
                         let dataMp = await resMp.json();
                         if (dataMp.status === 'APPROVED') { clearInterval(intervaloFisico); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-sucesso'); setTimeout(() => window.location.reload(), 4000); return; } 
-                        else if (dataMp.status === 'REJECTED') { clearInterval(intervaloFisico); exibirAlerta("Pagamento Cancelado", "A operação foi cancelada na maquininha."); voltarInicio(); return; }
+                        else if (dataMp.status === 'REJECTED') { clearInterval(intervaloFisico); exibirAlerta("Cancelado", "A operação foi cancelada na maquininha."); return; }
                         let res = await fetch('/api/status_geral?t=' + new Date().getTime()); let statusCache = await res.json(); let st = statusCache[id] || "DISPONIVEL"; 
                         if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { clearInterval(intervaloFisico); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-sucesso'); setTimeout(() => window.location.reload(), 4000); } 
                     } catch(e) { } 
-                }, 2500); 
-            }
-
-            function iniciarRadarPix(id) { 
-                intervaloPix = setInterval(async () => { 
-                    try { 
-                        let res = await fetch('/api/status_geral?t=' + new Date().getTime()); let statusCache = await res.json(); let st = statusCache[id] || "DISPONIVEL"; 
-                        if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { clearInterval(intervaloPix); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-sucesso'); setTimeout(() => window.location.reload(), 4000); } 
-                    } catch(e) {} 
                 }, 2500); 
             }
         </script>
     </body></html>`);
 });
 
-app.post('/criar_pagamento', async (req, res) => {
-    let { id_maquina, tempo } = req.body;
-    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
-    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Máquina não configurada" });
-    if (STATUS_CACHE[id_maquina] && STATUS_CACHE[id_maquina].includes('TEMPO:')) return res.status(400).json({ error: "MÁQUINA EM USO." });
-
-    try {
-        const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
-        if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
-        const preference = { items: [{ title: `Ciclo ${dados.tempo}min - ${id_maquina}`, unit_price: parseFloat(dados.preco), quantity: 1, currency_id: 'BRL' }], metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, payer: { email: `cliente_${Date.now()}@lavanderia.com` }, payment_methods: { excluded_payment_types: [{ id: "ticket" }, { id: "atm" }], installments: 1 }, notification_url: "https://lavanderia-v2.onrender.com/webhook", auto_return: "approved", back_urls: { success: "https://lavanderia-v2.onrender.com/sucesso", failure: "https://lavanderia-v2.onrender.com/erro" } };
-        const response = await axios.post('https://api.mercadopago.com/checkout/preferences', preference, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
-        res.json({ status: 'ok', init_point: response.data.init_point });
-    } catch (e) { res.status(500).json({ error: "Erro MP" }); }
-});
-
-app.post('/api/gerar_pix', async (req, res) => {
-    let { id_maquina, tempo } = req.body;
-    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
-    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Erro" });
-
-    try {
-        const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
-        if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
-        const paymentData = { transaction_amount: parseFloat(dados.preco), description: `Unileve - ${id_maquina}`, payment_method_id: "pix", payer: { email: `c_${Date.now()}@mail.com` }, metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, notification_url: "https://lavanderia-v2.onrender.com/webhook" };
-        const response = await axios.post('https://api.mercadopago.com/v1/payments', paymentData, { headers: { 'Authorization': `Bearer ${config.token_mp}`, 'X-Idempotency-Key': `${id_maquina}-${Date.now()}` } });
-        res.json({ success: true, qr_code_base64: response.data.point_of_interaction.transaction_data.qr_code_base64, qr_code: response.data.point_of_interaction.transaction_data.qr_code });
-    } catch (e) { res.status(500).json({ error: "Erro Pix" }); }
-});
-
-app.post('/webhook', async (req, res) => {
-    let tipoEvento = req.query.type || req.body.type || req.body.action || req.query.topic;
-    if (tipoEvento === 'point_integration_wh') {
-        const info = req.body;
-        if (info.state === 'FINISHED' && info.payment && info.payment.state === 'approved' && info.additional_info && info.additional_info.external_reference) {
-            const partes = info.additional_info.external_reference.split('|');
-            if (partes[0] && partes[1]) executarDisparo(partes[0], partes[1]); 
-        }
-        return res.sendStatus(200);
-    }
-    if (tipoEvento === 'payment' || tipoEvento === 'payment.created') {
-        const idPagamento = (req.body.data && req.body.data.id) ? req.body.data.id : req.query['data.id'];
-        if (idPagamento) {
-            const tokensUnicos = [...new Set(Object.values(CLIENTES).map(c => c.token_mp))];
-            for (const token of tokensUnicos) {
-                try {
-                    const response = await axios.get(`https://api.mercadopago.com/v1/payments/${idPagamento}`, { headers: { 'Authorization': `Bearer ${token}` } });
-                    if (response.data.status === 'approved') {
-                        let maquina = null; let tempo = "45";
-                        if (response.data.metadata && response.data.metadata.maquina) { maquina = response.data.metadata.maquina; tempo = response.data.metadata.tempo_planilha || "45"; } 
-                        else if (response.data.external_reference && response.data.external_reference.includes('|')) { const partes = response.data.external_reference.split('|'); maquina = partes[0]; tempo = partes[1]; }
-                        if (maquina) { executarDisparo(maquina, tempo); return res.sendStatus(200); }
-                    }
-                } catch (err) {}
-            }
-        }
-    }
-    res.sendStatus(200);
-});
-
-app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
-app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
-
 // ==========================================
-// ⏰ O DESPERTADOR COM MARRETA EXTREMA
+// ⏰ O DESPERTADOR SAUDÁVEL (A cada 3 horas)
 // ==========================================
 setInterval(async () => {
-    console.log("[DESPERTADOR] Iniciando rotina para acordar maquininhas...");
+    console.log("[DESPERTADOR] Iniciando rotina para acordar maquininhas (3 Horas)...");
     for (let id_maquina in CLIENTES) {
         let config = CLIENTES[id_maquina];
         if (config && config.device_id && !INTENTS_ATIVOS[id_maquina]) {
             try {
                 const ordemFantasma = { amount: 100, description: `Despertador`, additional_info: { external_reference: `ping`, print_on_terminal: false } };
                 const resp = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemFantasma, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
-                
-                const intentFalsoId = resp.data.id;
                 await new Promise(resolve => setTimeout(resolve, 3000));
-                
-                await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${intentFalsoId}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
-                console.log(`[DESPERTADOR] ${id_maquina} acordada e limpa com sucesso!`);
+                await forcarCancelamentoMP(config.device_id, resp.data.id, config.token_mp);
             } catch (e) {
-                console.log(`[DESPERTADOR] Falha ao acordar ${id_maquina}. Aplicando Marreta Extrema...`);
-                await aplicarMarretaExtrema(config.device_id, config.token_mp);
+                console.log(`[DESPERTADOR] Falha ao acordar ${id_maquina}. A máquina deve estar OFF ou Ocupada.`);
             }
         }
     }
-}, 30000); // ⚠️ Mantido em 30 segundos para o teste!
+}, 3 * 60 * 60 * 1000);
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
