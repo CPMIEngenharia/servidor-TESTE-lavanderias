@@ -342,24 +342,60 @@ app.post('/api/verificar_pagamento_fisico', async (req, res) => {
     }
 });
 
-app.post('/api/pagar_fisico', async (req, res) => {
-    let { id_maquina, tempo } = req.body; const config = CLIENTES[id_maquina];
-    if (!config || !config.device_id) return res.status(400).json({ error: "Máquina não configurada." });
-    if (INTENTS_ATIVOS[id_maquina]) { try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${INTENTS_ATIVOS[id_maquina]}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); } catch(e) {} delete INTENTS_ATIVOS[id_maquina]; }
+app.post('/api/pagar_fisico'
 
+app.post('/api/pagar_fisico', async (req, res) => {
+    let { id_maquina, tempo } = req.body; 
+    const config = CLIENTES[id_maquina];
+    if (!config || !config.device_id) return res.status(400).json({ error: "Máquina não configurada." });
+
+    // 🧹 A MARRETA: Força a maquininha a apagar qualquer cobrança velha travada na tela ANTES de começar uma nova
+    try {
+        await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, {
+            headers: { 'Authorization': `Bearer ${config.token_mp}` }
+        });
+    } catch (e) {
+        // Ignora silenciosamente se a máquina já estiver limpa
+    }
+    delete INTENTS_ATIVOS[id_maquina];
+
+    // 💳 Cria a nova cobrança perfeitamente limpa
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
-        if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero." });
-        const ordemPagamento = { amount: Math.round(parseFloat(dados.preco) * 100), description: `Unileve - ${id_maquina}`, additional_info: { external_reference: `${id_maquina}|${dados.tempo}`, print_on_terminal: false } };
-        const response = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemPagamento, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
-        INTENTS_ATIVOS[id_maquina] = response.data.id; res.json({ success: true, intent_id: response.data.id });
-    } catch (error) { res.status(500).json({ error: "Erro na maquininha." }); }
+        if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero na planilha." });
+        
+        const ordemPagamento = { 
+            amount: Math.round(parseFloat(dados.preco) * 100), 
+            description: `Unileve - ${id_maquina}`, 
+            additional_info: { external_reference: `${id_maquina}|${dados.tempo}`, print_on_terminal: false } 
+        };
+        
+        const response = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemPagamento, { 
+            headers: { 'Authorization': `Bearer ${config.token_mp}` } 
+        });
+        
+        INTENTS_ATIVOS[id_maquina] = response.data.id; 
+        res.json({ success: true, intent_id: response.data.id });
+    } catch (error) { 
+        res.status(500).json({ error: "A maquininha pode estar desligada ou sem internet." }); 
+    }
 });
 
 app.post('/api/cancelar_fisico', async (req, res) => {
-    const { id_maquina } = req.body; const config = CLIENTES[id_maquina]; const intentId = INTENTS_ATIVOS[id_maquina];
-    if (!config || !intentId) return res.json({ success: false });
-    try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); delete INTENTS_ATIVOS[id_maquina]; } catch (e) {}
+    const { id_maquina } = req.body; 
+    const config = CLIENTES[id_maquina]; 
+    if (!config) return res.json({ success: false });
+    
+    // 🧹 A MARRETA: Limpeza geral forçada quando dá Tempo Esgotado ou o cliente clica em Cancelar
+    try { 
+        await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, { 
+            headers: { 'Authorization': `Bearer ${config.token_mp}` } 
+        }); 
+    } catch (e) {
+        console.log("Erro ao limpar maquininha no cancelamento:", e.message);
+    }
+    
+    delete INTENTS_ATIVOS[id_maquina]; 
     res.json({ success: true });
 });
 
