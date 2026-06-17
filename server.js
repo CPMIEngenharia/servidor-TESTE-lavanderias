@@ -547,6 +547,20 @@ setInterval(async () => {
         }
     }
 }, 5 * 60 * 1000); // ⚠️ Mantido em 5 minutos para teste. Quando o teste passar, mude para: 3 * 60 * 60 * 1000
+// ==========================================
+// 🔄 ROTINA DE AUTO-PING (Anti-Standby do Render)
+// ==========================================
+// Rota leve apenas para responder ao ping
+app.get('/api/autoping', (req, res) => res.send('pong'));
 
+setInterval(async () => {
+    try {
+        // Alvo baseado na URL principal do seu servidor que vimos nos logs
+        await axios.get('https://lavanderia-server.onrender.com/api/autoping');
+        console.log('[AUTO-PING] Servidor chamado com sucesso para evitar a pausa de 15 minutos.');
+    } catch (e) {
+        console.log('[AUTO-PING] Erro ao tentar chamar a si mesmo:', e.message);
+    }
+}, 10 * 60 * 1000); // ⏱️ Executa rigidamente a cada 10 minutos
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
