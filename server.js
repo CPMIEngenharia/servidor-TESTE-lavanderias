@@ -33,27 +33,6 @@ function getGoogleAuth() {
     });
 }
 
-// 🔥 MARRETA EXTREMA CALIBRADA: Força o Android da maquininha a alternar de modo e abrir a tela certa
-async function aplicarMarretaExtrema(deviceId, token) {
-    try {
-        console.log(`[MARRETA] Forçando modo STANDALONE no dispositivo ${deviceId}...`);
-        await axios.patch(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}`, { operating_mode: "STANDALONE" }, { headers: { 'Authorization': `Bearer ${token}` } });
-        
-        // ⏱️ Tempo de respiro para a nuvem do Mercado Pago processar a desconexão
-        await new Promise(r => setTimeout(r, 5000)); 
-        
-        console.log(`[MARRETA] Forçando retorno para o modo PDV...`);
-        await axios.patch(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}`, { operating_mode: "PDV" }, { headers: { 'Authorization': `Bearer ${token}` } });
-        
-        // ⏱️ Tempo para a interface física da maquininha atualizar e carregar o app em primeiro plano
-        await new Promise(r => setTimeout(r, 5000)); 
-        
-        console.log(`[MARRETA EXTREMA] Sincronização de tela concluída com sucesso!`);
-    } catch (e) {
-        console.log(`[MARRETA EXTREMA] Falha na sincronização do dispositivo ${deviceId}:`, e.message);
-    }
-}
-
 async function forcarCancelamentoMP(deviceId, intentId, token) {
     try {
         await axios.delete(`https://api.mercadopago.com/point/integration-api/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${token}` } });
@@ -63,7 +42,6 @@ async function forcarCancelamentoMP(deviceId, intentId, token) {
             await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${token}` } });
             return true;
         } catch (e2) {
-            console.log(`[MP BLOQUEOU] Não foi possível cancelar (ON_TERMINAL). O hardware fará o timeout natural.`);
             return false;
         }
     }
@@ -75,7 +53,7 @@ async function carregarConfiguracoes() {
         const sheets = google.sheets({ version: 'v4', auth });
         const response = await sheets.spreadsheets.values.get({ spreadsheetId: MASTER_SHEET_ID, range: 'CONFIG_GERAL!A:F' });
         const linhas = response.data.values;
-        if (linhas && linhas.length > 1) { // Corrigido o erro de digitação para "linhas" aqui!
+        if (linhas && linhas.length > 1) {
             CLIENTES = {}; 
             for (let i = 1; i < linhas.length; i++) {
                 const [id, dono, token, sheet, maquininha, deviceId] = linhas[i];
@@ -112,7 +90,7 @@ async function sincronizarPrecosPlanilhas() {
                 let pLavar = colLavar !== -1 && linhas[i][colLavar] ? linhas[i][colLavar].toString().replace('R$', '').replace(',', '.').trim() : "0";
                 let pSecar = colSecar !== -1 && linhas[i][colSecar] ? linhas[i][colSecar].toString().replace('R$', '').replace(',', '.').trim() : "0";
                 let tCiclo = colTempo !== -1 && linhas[i][colTempo] ? linhas[i][colTempo].toString().trim() : "45";
-                let pPromo = colPrecoPromo !== -1 && linhas[i][colPrecoPromo] ? linhas[i][colPrecoPromo].toString().trim() : "";
+                let pPromo = colPrecoPromo !== -1 && líneas[i][colPrecoPromo] ? linhas[i][colPrecoPromo].toString().trim() : "";
                 let dPromo = colDiaPromo !== -1 && linhas[i][colDiaPromo] ? linhas[i][colDiaPromo].toString().trim() : "";
                 let hInicio = colHoraInicio !== -1 && linhas[i][colHoraInicio] ? linhas[i][colHoraInicio].toString().trim() : "";
                 let hFim = colHoraFim !== -1 && linhas[i][colHoraFim] ? linhas[i][colHoraFim].toString().trim() : "";
@@ -193,7 +171,7 @@ app.get('/painel', (req, res) => {
         const isSecadora = id.toLowerCase().includes('sec');
         let dadosAtuais = CACHE_DADOS_MAQUINAS[id] || { preco_lavar: "0", preco_secar: "0", tempo: "45", preco_promo: "", dia_promo: "", hora_inicio: "", hora_fim: "" };
         let precoAtivo = isSecadora ? dadosAtuais.preco_secar : dadosAtuais.preco_lavar;
-
+        
         let botaoCicloNormal = "";
         if (isSecadora) {
             botaoCicloNormal = `<button onclick="acionar('${id}', 'SECAR:${dadosAtuais.tempo}')" style="width:100%; background:#e67e22; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer;">🔥 FORÇAR SECAR (${dadosAtuais.tempo} MIN)</button>`;
@@ -279,13 +257,15 @@ app.post('/api/pagar_fisico', async (req, res) => {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero na planilha." });
 
-        await aplicarMarretaExtrema(config.device_id, config.token_mp);
+        // Força o modo PDV remotamente caso ela tenha saído por algum motivo
+        axios.patch(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}`, { operating_mode: "PDV" }, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }).catch(()=>{});
 
         const ordemPagamento = { amount: Math.round(parseFloat(dados.preco) * 100), description: `Unileve - ${id_maquina}`, additional_info: { external_reference: `${id_maquina}|${dados.tempo}`, print_on_terminal: false } };
         const response = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemPagamento, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
-        INTENTS_ATIVOS[id_maquina] = response.data.id; res.json({ success: true, intent_id: response.data.id });
+        INTENTS_ATIVOS[id_maquina] = response.data.id; 
+        res.json({ success: true, intent_id: response.data.id });
     } catch (error) { 
-        res.status(500).json({ error: "A maquininha não respondeu.<br><br>Se ela estiver travada ou na tela inicial, toque na <b>SETA DE VOLTAR ( &larr; )</b> nela e tente novamente." }); 
+        res.status(500).json({ error: "A maquininha não respondeu.<br><br>Se ela estiver na tela inicial, <b>TOQUE NO BOTÃO 'INSERIR VALOR'</b> nela para ativar o pagamento." }); 
     }
 });
 
@@ -298,8 +278,6 @@ app.post('/api/cancelar_fisico', async (req, res) => {
         await forcarCancelamentoMP(config.device_id, INTENTS_ATIVOS[id_maquina], config.token_mp);
         delete INTENTS_ATIVOS[id_maquina]; 
     }
-    
-    await aplicarMarretaExtrema(config.device_id, config.token_mp);
     res.json({ success: true });
 });
 
@@ -359,9 +337,6 @@ app.post('/webhook', async (req, res) => {
     }
     res.sendStatus(200);
 });
-
-app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
-app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
 
 // --- TOTEM VIEW ---
 app.get('/totem/:donoUrl', (req, res) => {
@@ -464,7 +439,7 @@ app.get('/totem/:donoUrl', (req, res) => {
                     if(intervaloFisico) clearInterval(intervaloFisico); 
                     if(intervaloPix) clearInterval(intervaloPix);
                     fetch('/api/cancelar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo }) });
-                    exibirAlerta("Tempo Esgotado", "Cancelamos a operação por inatividade.<br><br>Se a maquininha física continuar acesa, por favor, toque na <b>SETA DE VOLTAR ( &larr; )</b> no canto superior esquerdo da tela dela para retornar ao menu principal."); 
+                    exibirAlerta("Tempo Esgotado", "Cancelamos a operação por inatividade.<br><br>Se a maquininha física continuar na tela de menus, por favor, toque no botão <b>'INSERIR VALOR'</b> nela para carregar o sistema."); 
                 }, 75000); 
             }
             
@@ -524,17 +499,15 @@ app.get('/totem/:donoUrl', (req, res) => {
 });
 
 // ==========================================
-// ⏰ O DESPERTADOR COM MARRETA INVERTIDA
+// ⏰ O DESPERTADOR COM "CHOQUE ELÉTRICO" (3h)
 // ==========================================
 setInterval(async () => {
-    console.log("[DESPERTADOR] Iniciando rotina de limpeza matinal...");
+    console.log("[DESPERTADOR] Iniciando rotina de choque matinal (3h)...");
     for (let id_maquina in CLIENTES) {
         let config = CLIENTES[id_maquina];
         if (config && config.device_id && !INTENTS_ATIVOS[id_maquina]) {
             try {
-                console.log(`[DESPERTADOR] Forçando modo PDV na máquina ${id_maquina}...`);
-                await aplicarMarretaExtrema(config.device_id, config.token_mp);
-                
+                console.log(`[DESPERTADOR] Mandando pulso de conexão na máquina ${id_maquina}...`);
                 const ordemFantasma = { amount: 100, description: `Despertador`, additional_info: { external_reference: `ping`, print_on_terminal: false } };
                 const resp = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemFantasma, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
                 
@@ -542,25 +515,25 @@ setInterval(async () => {
                 try { await axios.delete(`https://api.mercadopago.com/point/integration-api/payment-intents/${resp.data.id}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); } catch(e) {}
                 
             } catch (e) {
-                console.log(`[DESPERTADOR] Falha ao acordar ${id_maquina}. A máquina deve estar OFF ou Ocupada.`);
+                console.log(`[DESPERTADOR] Falha ao acordar ${id_maquina}.`);
             }
         }
     }
-}, 3 * 60 * 60 * 1000); // ⚠️ Mantido em 5 minutos para teste. Quando o teste passar, mude para: 3 * 60 * 60 * 1000 (para 3h), 5 * 60 * 1000 ( pra 5 minutos)
+}, 3 * 60 * 60 * 1000); // ⏱️ Executa rigidamente a cada 3 horas (Segurança total)
+
 // ==========================================
 // 🔄 ROTINA DE AUTO-PING (Anti-Standby do Render)
 // ==========================================
-// Rota leve apenas para responder ao ping
 app.get('/api/autoping', (req, res) => res.send('pong'));
 
 setInterval(async () => {
     try {
-        // Alvo baseado na URL principal do seu servidor que vimos nos logs
         await axios.get('https://lavanderia-server.onrender.com/api/autoping');
         console.log('[AUTO-PING] Servidor chamado com sucesso para evitar a pausa de 15 minutos.');
     } catch (e) {
         console.log('[AUTO-PING] Erro ao tentar chamar a si mesmo:', e.message);
     }
-}, 10 * 60 * 1000); // ⏱️ Executa rigidamente a cada 10 minutos
+}, 10 * 60 * 1000); // ⏱️ Executa rigidamente a cada 10 minutos para burlar a trava do plano gratuito do Render
+
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
