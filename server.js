@@ -546,7 +546,7 @@ setInterval(async () => {
             }
         }
     }
-}, 5 * 60 * 1000); // ⚠️ Mantido em 5 minutos para teste. Quando o teste passar, mude para: 3 * 60 * 60 * 1000
+}, 3 * 60 * 60 * 1000); // ⚠️ Mantido em 5 minutos para teste. Quando o teste passar, mude para: 3 * 60 * 60 * 1000 (para 3h), 5 * 60 * 1000 ( pra 5 minutos)
 // ==========================================
 // 🔄 ROTINA DE AUTO-PING (Anti-Standby do Render)
 // ==========================================
