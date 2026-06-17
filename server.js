@@ -58,11 +58,19 @@ async function carregarConfiguracoes() {
             for (let i = 1; i < linhas.length; i++) {
                 const [id, dono, token, sheet, maquininha, deviceId] = linhas[i];
                 if (id && dono) {
-                    CLIENTES[id.trim()] = { dono: dono.trim(), token_mp: token ? token.trim() : "", sheet_id: sheet ? sheet.trim() : "", usa_maquininha: maquininha && String(maquininha).trim().toUpperCase() === "SIM", device_id: deviceId ? deviceId.trim() : "" };
+                    CLIENTES[id.trim()] = { 
+                        dono: dono.trim(), 
+                        token_mp: token ? token.trim() : "", 
+                        sheet_id: sheet ? sheet.trim() : "", 
+                        usa_maquininha: maquininha && String(maquininha).trim().toUpperCase() === "SIM", 
+                        device_id: deviceId ? deviceId.trim() : "" 
+                    };
                 }
             }
         }
-    } catch (err) {}
+    } catch (err) {
+        console.error("Erro ao carregar configurações: ", err.message);
+    }
 }
 
 async function sincronizarPrecosPlanilhas() {
@@ -86,7 +94,9 @@ async function sincronizarPrecosPlanilhas() {
 
             for (let i = 1; i < linhas.length; i++) {
                 let idMaq = linhas[i][0];
-                if (!idMaq) continue; idMaq = idMaq.trim();
+                if (!idMaq) continue; 
+                idMaq = idMaq.trim();
+                
                 let pLavar = colLavar !== -1 && linhas[i][colLavar] ? linhas[i][colLavar].toString().replace('R$', '').replace(',', '.').trim() : "0";
                 let pSecar = colSecar !== -1 && linhas[i][colSecar] ? linhas[i][colSecar].toString().replace('R$', '').replace(',', '.').trim() : "0";
                 let tCiclo = colTempo !== -1 && linhas[i][colTempo] ? linhas[i][colTempo].toString().trim() : "45";
@@ -94,9 +104,20 @@ async function sincronizarPrecosPlanilhas() {
                 let dPromo = colDiaPromo !== -1 && linhas[i][colDiaPromo] ? linhas[i][colDiaPromo].toString().trim() : "";
                 let hInicio = colHoraInicio !== -1 && linhas[i][colHoraInicio] ? linhas[i][colHoraInicio].toString().trim() : "";
                 let hFim = colHoraFim !== -1 && linhas[i][colHoraFim] ? linhas[i][colHoraFim].toString().trim() : "";
-                CACHE_DADOS_MAQUINAS[idMaq] = { preco_lavar: pLavar, preco_secar: pSecar, tempo: tCiclo, preco_promo: pPromo, dia_promo: dPromo, hora_inicio: hInicio, hora_fim: hFim };
+                
+                CACHE_DADOS_MAQUINAS[idMaq] = { 
+                    preco_lavar: pLavar, 
+                    preco_secar: pSecar, 
+                    tempo: tCiclo, 
+                    preco_promo: pPromo, 
+                    dia_promo: dPromo, 
+                    hora_inicio: hInicio, 
+                    hora_fim: hFim 
+                };
             }
-        } catch (err) {}
+        } catch (err) {
+            console.error("Erro ao sincronizar preços: ", err.message);
+        }
     }
 }
 
@@ -119,20 +140,26 @@ async function autenticarUsuarioNaPlanilha(usuario, senha) {
         const response = await sheets.spreadsheets.values.get({ spreadsheetId: MASTER_SHEET_ID, range: 'Login!A:C' });
         const linhas = response.data.values;
         if (!linhas) return null;
+        
         const header = linhas[0];
         const colUser = header.findIndex(h => h.trim() === 'usuario_login');
         const colPass = header.findIndex(h => h.trim() === 'senha_acesso');
         const colDono = header.findIndex(h => h.trim() === 'dono');
+        
         const linhaUsuario = linhas.find(row => row[colUser] && row[colUser].trim() === usuario.trim() && row[colPass] && String(row[colPass]).trim() === String(senha).trim());
         return linhaUsuario ? linhaUsuario[colDono].trim() : null;
-    } catch (err) { return null; }
+    } catch (err) { 
+        return null; 
+    }
 }
 
 const mqttClient = mqtt.connect('mqtts://89c0f9913b464fe793a20c71d78ec5c6.s1.eu.hivemq.cloud:8883', { username: 'unileve', password: 'Unilevepassword1', rejectUnauthorized: false });
 mqttClient.on('connect', () => { mqttClient.subscribe('lavanderia/+/status'); });
 mqttClient.on('message', (topic, message) => {
     const partes = topic.split('/');
-    if (partes.length === 3 && partes[2] === 'status') STATUS_CACHE[partes[1]] = message.toString();
+    if (partes.length === 3 && partes[2] === 'status') {
+        STATUS_CACHE[partes[1]] = message.toString();
+    }
 });
 
 function executarDisparo(idMaquina, parametro) {
@@ -155,11 +182,15 @@ function executarDisparo(idMaquina, parametro) {
 
 app.get('/painel', (req, res) => {
     const donoLogado = req.cookies.dono;
-    if (!donoLogado) return res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#2c3e50;margin:0}.card{background:white;padding:2rem;border-radius:10px;text-align:center;width:90%;max-width:320px}input{width:100%;padding:10px;margin-bottom:10px}button{width:100%;padding:10px;background:#27ae60;color:white;border:none;border-radius:5px}</style></head><body><div class="card"><h2>Unileve Admin</h2><form action="/login" method="POST"><input type="text" name="usuario" placeholder="Usuário" required><input type="password" name="senha" placeholder="Senha" required><button type="submit">ENTRAR</button></form></div></body></html>`);
+    if (!donoLogado) {
+        return res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#2c3e50;margin:0}.card{background:white;padding:2rem;border-radius:10px;text-align:center;width:90%;max-width:320px}input{width:100%;padding:10px;margin-bottom:10px}button{width:100%;padding:10px;background:#27ae60;color:white;border:none;border-radius:5px}</style></head><body><div class="card"><h2>Unileve Admin</h2><form action="/login" method="POST"><input type="text" name="usuario" placeholder="Usuário" required><input type="password" name="senha" placeholder="Senha" required><button type="submit">ENTRAR</button></form></div></body></html>`);
+    }
 
     let maquinasDoDono = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono === donoLogado).sort((a, b) => {
-        let isSecA = a.toLowerCase().includes('sec'); let isSecB = b.toLowerCase().includes('sec');
-        if (isSecA === isSecB) return a.localeCompare(b); return isSecA ? 1 : -1; 
+        let isSecA = a.toLowerCase().includes('sec'); 
+        let isSecB = b.toLowerCase().includes('sec');
+        if (isSecA === isSecB) return a.localeCompare(b); 
+        return isSecA ? 1 : -1; 
     });
 
     let htmlCards = maquinasDoDono.map(id => {
@@ -172,9 +203,6 @@ app.get('/painel', (req, res) => {
         let dadosAtuais = CACHE_DADOS_MAQUINAS[id] || { preco_lavar: "0", preco_secar: "0", tempo: "45", preco_promo: "", dia_promo: "", hora_inicio: "", hora_fim: "" };
         let precoAtivo = isSecadora ? dadosAtuais.preco_secar : dadosAtuais.preco_lavar;
         
-        let txtPromo = "Nenhuma promoção programada.";
-        if (dadosAtuais.preco_promo && dadosAtuais.dia_promo) { txtPromo = `<span style="font-size:16px;">R$ ${dadosAtuais.preco_promo}</span><br>${dadosAtuais.dia_promo} | ${dadosAtuais.hora_inicio || "00:00"} às ${dadosAtuais.hora_fim || "23:59"}`; }
-
         let botaoCicloNormal = "";
         if (isSecadora) {
             botaoCicloNormal = `<button onclick="acionar('${id}', 'SECAR:${dadosAtuais.tempo}')" style="width:100%; background:#e67e22; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer;">🔥 FORÇAR SECAR (${dadosAtuais.tempo} MIN)</button>`;
@@ -260,7 +288,11 @@ app.post('/api/pagar_fisico', async (req, res) => {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero na planilha." });
 
-        const ordemPagamento = { amount: Math.round(parseFloat(dados.preco) * 100), description: `Unileve - ${id_maquina}`, additional_info: { external_reference: `${id_maquina}|${dados.tempo}`, print_on_terminal: false } };
+        const ordemPagamento = { 
+            amount: Math.round(parseFloat(dados.preco) * 100), 
+            description: `Unileve - ${id_maquina}`, 
+            additional_info: { external_reference: `${id_maquina}|${dados.tempo}`, print_on_terminal: false } 
+        };
         const response = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemPagamento, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
         INTENTS_ATIVOS[id_maquina] = response.data.id; 
         res.json({ success: true, intent_id: response.data.id });
@@ -283,12 +315,24 @@ app.post('/api/cancelar_fisico', async (req, res) => {
 
 app.post('/criar_pagamento', async (req, res) => {
     let { id_maquina, tempo } = req.body;
-    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
-    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Máquina não configurada" });
+    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; 
+    if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
+    
+    const config = CLIENTES[id_maquina]; 
+    if (!config) return res.status(400).json({ error: "Máquina não configurada" });
+    
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
-        const preference = { items: [{ title: `Ciclo ${dados.tempo}min - ${id_maquina}`, unit_price: parseFloat(dados.preco), quantity: 1, currency_id: 'BRL' }], metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, payer: { email: `cliente_@lavanderia.com` }, payment_methods: { excluded_payment_types: [{ id: "ticket" }, { id: "atm" }], installments: 1 }, notification_url: "https://lavanderia-v2.onrender.com/webhook", auto_return: "approved", back_urls: { success: "https://lavanderia-v2.onrender.com/sucesso", failure: "https://lavanderia-v2.onrender.com/erro" } };
+        const preference = { 
+            items: [{ title: `Ciclo ${dados.tempo}min - ${id_maquina}`, unit_price: parseFloat(dados.preco), quantity: 1, currency_id: 'BRL' }], 
+            metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, 
+            payer: { email: `cliente_${Date.now()}@lavanderia.com` }, 
+            payment_methods: { excluded_payment_types: [{ id: "ticket" }, { id: "atm" }], installments: 1 }, 
+            notification_url: "https://lavanderia-server.onrender.com/webhook", 
+            auto_return: "approved", 
+            back_urls: { success: "https://lavanderia-server.onrender.com/sucesso", failure: "https://lavanderia-server.onrender.com/erro" } 
+        };
         const response = await axios.post('https://api.mercadopago.com/checkout/preferences', preference, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
         res.json({ status: 'ok', init_point: response.data.init_point });
     } catch (e) { res.status(500).json({ error: "Erro MP" }); }
@@ -296,13 +340,23 @@ app.post('/criar_pagamento', async (req, res) => {
 
 app.post('/api/gerar_pix', async (req, res) => {
     let { id_maquina, tempo } = req.body;
-    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
-    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Configuração não encontrada" });
+    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; 
+    if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
+    
+    const config = CLIENTES[id_maquina]; 
+    if (!config) return res.status(400).json({ error: "Configuração não encontrada" });
 
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero na planilha." });
-        const paymentData = { transaction_amount: parseFloat(dados.preco), description: `Unileve - ${id_maquina}`, payment_method_id: "pix", payer: { email: `c_${Date.now()}@mail.com` }, metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, notification_url: "https://lavanderia-v2.onrender.com/webhook" };
+        const paymentData = { 
+            transaction_amount: parseFloat(dados.preco), 
+            description: `Unileve - ${id_maquina}`, 
+            payment_method_id: "pix", 
+            payer: { email: `c_${Date.now()}@mail.com` }, 
+            metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, 
+            notification_url: "https://lavanderia-server.onrender.com/webhook" 
+        };
         const response = await axios.post('https://api.mercadopago.com/v1/payments', paymentData, { headers: { 'Authorization': `Bearer ${config.token_mp}`, 'X-Idempotency-Key': `${id_maquina}-${Date.now()}` } });
         res.json({ success: true, qr_code_base64: response.data.point_of_interaction.transaction_data.qr_code_base64, qr_code: response.data.point_of_interaction.transaction_data.qr_code });
     } catch (e) { res.status(500).json({ error: "Erro Pix" }); }
@@ -367,4 +421,175 @@ app.get('/totem/:donoUrl', (req, res) => {
             let isOcupada = (STATUS_CACHE[conj.lavadora] || "").includes("TEMPO:") || (STATUS_CACHE[conj.lavadora] || "").includes("LAVANDO") || (STATUS_CACHE[conj.lavadora] || "").includes("OCUPADA");
             btnLavadora = `<button class="btn-maq lavadora ${isOcupada ? 'ocupada' : ''}" onclick="${isOcupada ? '' : `iniciarFluxo('${conj.lavadora}', '${num}', 'lavar')`}"><div class="icon">💧</div><h3>LAVADORA ${num}</h3><p>${isOcupada ? 'EM USO' : 'TOCAR PARA PAGAR'}</p></button>`;
         }
-        htmlConjuntos += `<div class="conjunto-card"><div class="conjunto-title">CON
+        htmlConjuntos += `<div class="conjunto-card"><div class="conjunto-title">CONJUNTO ${num}</div>${btnSecadora}${btnLavadora}</div>`;
+    });
+
+    res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #eef2f5; margin: 0; padding: 0; user-select: none; }
+        .tela { display: none; min-height: 100vh; flex-direction: column; align-items: center; justify-content: center; width: 100%; box-sizing: border-box; padding: 20px; }
+        .tela.ativa { display: flex; }
+        #tela-principal { align-items: center; justify-content: flex-start; padding-top: 40px; }
+        .header-title { color: #34495e; text-align: center; margin-bottom: 30px; }
+        .header-title h1 { margin: 0; font-size: 32px; }
+        .header-title p { margin: 5px 0 0 0; color: #7f8c8d; font-size: 18px; }
+        .grid-conjuntos { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; max-width: 1200px; }
+        .conjunto-card { background: #fff; border-radius: 15px; padding: 20px; width: 260px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); display:flex; flex-direction:column; gap:15px; }
+        .conjunto-title { text-align: center; color: #7f8c8d; font-weight: bold; letter-spacing: 1px; font-size: 14px; }
+        .btn-maq { border: none; border-radius: 12px; padding: 20px 10px; color: white; cursor: pointer; transition: transform 0.1s; display: flex; flex-direction: column; align-items: center; justify-content: center; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        .btn-maq:active { transform: scale(0.97); }
+        .btn-maq h3 { margin: 10px 0 5px 0; font-size: 18px; }
+        .btn-maq p { margin: 0; font-size: 12px; font-weight: bold; background: rgba(0,0,0,0.2); padding: 5px 10px; border-radius: 20px; }
+        .btn-maq .icon { font-size: 35px; }
+        .secadora { background: linear-gradient(135deg, #e67e22, #d35400); }
+        .lavadora { background: linear-gradient(135deg, #3498db, #2980b9); }
+        .ocupada { filter: grayscale(100%); opacity: 0.6; cursor: not-allowed; }
+        .tela-escura { background: #2c3e50; color: white; text-align: center; }
+        .icon-gigante { font-size: 60px; margin-bottom: 10px; }
+        .box-aviso { max-width: 500px; width: 100%; }
+        .box-aviso h2 { color: #f1c40f; font-size: 30px; margin-bottom: 20px; }
+        .box-aviso p { font-size: 20px; line-height: 1.5; margin-bottom: 30px; }
+        .alerta-vermelho { background: rgba(231, 76, 60, 0.2); border: 1px solid #e74c3c; color: #e74c3c; padding: 10px; border-radius: 8px; font-size: 14px; font-weight: bold; margin-bottom: 30px; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .btn-acao { padding: 20px; font-size: 18px; font-weight: bold; color: white; border: none; border-radius: 10px; cursor: pointer; }
+        .btn-vermelho { background: #e74c3c; }
+        .btn-verde { background: #27ae60; }
+        .btn-pagamento { width: 100%; margin-bottom: 15px; padding: 25px; border-radius: 12px; border: none; color: white; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        .btn-pagamento.cartao { background: linear-gradient(135deg, #e74c3c, #c0392b); }
+        .btn-pagamento.pix { background: linear-gradient(135deg, #2ecc71, #27ae60); }
+        .btn-pagamento h3 { margin: 0 0 5px 0; font-size: 24px; }
+        .btn-pagamento p { margin: 0; font-size: 14px; opacity: 0.9; }
+        .btn-cancelar { background: transparent; border: 2px solid #7f8c8d; color: #bdc3c7; width: 100%; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; margin-top: 20px; cursor: pointer; }
+        .box-branca { background: white; padding: 20px; border-radius: 15px; display: inline-block; margin: 20px 0; }
+        #modal-alerta { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999; justify-content: center; align-items: center; }
+        .alerta-box { background: white; padding: 30px; border-radius: 15px; text-align: center; max-width: 400px; color: #2c3e50; }
+        .alerta-box h3 { color: #e74c3c; margin-top: 0; font-size: 24px; }
+        .alerta-btn { background: #34495e; color: white; border: none; padding: 15px 30px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 20px; width: 100%; }
+        .spinner { border: 4px solid rgba(255,255,255,0.3); border-radius: 50%; border-top: 4px solid #2ecc71; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style></head><body>
+        <div id="tela-principal" class="tela ativa"><div class="header-title"><h1>Bem-vindo à Unileve</h1><p>Toque na máquina que você deseja usar:</p></div><div class="grid-conjuntos">${htmlConjuntos}</div></div>
+        <div id="tela-atencao" class="tela tela-escura"><div class="box-aviso"><div class="icon-gigante">👕</div><h2>ATENÇÃO</h2><p id="txt-pergunta-roupa">Você já colocou as roupas na MÁQUINA e fechou a porta?</p><div class="alerta-vermelho">⚠️ Após o pagamento aprovado, a máquina iniciará automaticamente.</div><div class="grid-2"><button class="btn-acao btn-vermelho" onclick="voltarInicio()">NÃO, VOU COLOCAR</button><button class="btn-acao btn-verde" onclick="mostrarPagamento()">SIM, JÁ COLOQUEI!</button></div></div></div>
+        <div id="tela-pagamento" class="tela tela-escura"><div class="box-aviso"><h2 style="color:white; margin-bottom:40px;">Como deseja pagar?</h2><button class="btn-pagamento cartao" onclick="pagarCartao()"><h3>💳 CARTÃO</h3><p>Na maquininha ao lado</p></button><button class="btn-pagamento pix" onclick="pagarPix()"><h3>🟢 PIX</h3><p>Ler QR Code nesta tela</p></button><button class="btn-cancelar" onclick="voltarInicio()">CANCELAR</button></div></div>
+        <div id="tela-cartao" class="tela tela-escura"><div class="box-aviso"><div class="icon-gigante" style="color:#e74c3c;">💳</div><h2 style="color:white;">Vá até a maquininha ao lado!</h2><p id="txt-liberar-cartao">Aproxime ou insira seu cartão para liberar a MÁQUINA.</p><button class="btn-cancelar" onclick="cancelarTransacao()">CANCELAR COMPRA</button></div></div>
+        <div id="tela-pix" class="tela tela-escura"><div class="box-aviso"><h2 style="color:#2ecc71;">Pague com PIX</h2><p>Abra o app do seu banco e escaneie o código abaixo:</p><div id="loading-pix"><div class="spinner"></div><p>Gerando código PIX...</p></div><div id="area-qrcode" style="display:none;"><div class="box-branca"><img id="imgPix" src="" style="width:250px; height:250px; display:block;" /></div><p style="color:#f1c40f; font-size:16px;">A máquina iniciará automaticamente após o pagamento.</p></div><button class="btn-cancelar" onclick="voltarInicio()">CANCELAR COMPRA</button></div></div>
+        <div id="tela-sucesso" class="tela tela-escura"><div class="box-aviso"><div class="icon-gigante" style="color:#27ae60;">✅</div><h2 style="color:#27ae60; font-size:40px;">Pagamento Aprovado!</h2><p>A sua máquina foi iniciada com sucesso.</p></div></div>
+        
+        <div id="modal-alerta"><div class="alerta-box"><div class="icon-gigante">⏳</div><h3 id="alerta-titulo">Aviso</h3><p id="alerta-msg">Mensagem</p><button class="alerta-btn" onclick="fecharAlerta()">ENTENDIDO</button></div></div>
+
+        <script>
+            let maqAlvo = ''; let nomeExibicao = ''; let tipoAlvo = ''; let tempoAlvo = '';
+            let intervaloFisico = null; let intervaloPix = null; let timerInatividade = null; 
+
+            function mostrarTela(id) { document.querySelectorAll('.tela').forEach(t => t.classList.remove('ativa')); document.getElementById(id).classList.add('ativa'); }
+            function voltarInicio() { if(intervaloFisico) clearInterval(intervaloFisico); if(intervaloPix) clearInterval(intervaloPix); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-principal'); }
+            function exibirAlerta(titulo, msg) { 
+                document.getElementById('alerta-titulo').innerText = titulo; 
+                document.getElementById('alerta-msg').innerHTML = msg; 
+                document.getElementById('modal-alerta').style.display = 'flex'; 
+            }
+            function fecharAlerta() { document.getElementById('modal-alerta').style.display = 'none'; voltarInicio(); }
+            
+            function iniciarCronometro() { 
+                if(timerInatividade) clearTimeout(timerInatividade); 
+                timerInatividade = setTimeout(() => { 
+                    if(intervaloFisico) clearInterval(intervaloFisico); 
+                    if(intervaloPix) clearInterval(intervaloPix);
+                    fetch('/api/cancelar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo }) });
+                    exibirAlerta("Tempo Esgotado", "Cancelamos a operação por inatividade.<br><br>Se a maquininha física continuar na tela de menus, por favor, toque no botão <b>'INSERIR VALOR'</b> nela para carregar o sistema."); 
+                }, 75000); 
+            }
+            
+            function iniciarFluxo(id, numero, tipo) { maqAlvo = id; tipoAlvo = tipo; nomeExibicao = (tipo === 'secar' ? 'SECADORA ' : 'LAVADORA ') + numero; tempoAlvo = (tipo === 'secar') ? 'preco_secar' : 'preco_45'; document.getElementById('txt-pergunta-roupa').innerText = 'Você já colocou as roupas na ' + nomeExibicao + ' e fechou a porta?'; document.getElementById('txt-liberar-cartao').innerText = 'Aproxime ou insira seu cartão para liberar a ' + nomeExibicao + '.'; mostrarTela('tela-atencao'); }
+            function mostrarPagamento() { mostrarTela('tela-pagamento'); }
+
+            function pagarCartao() {
+                mostrarTela('tela-cartao');
+                fetch('/api/pagar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo, tempo: tempoAlvo }) })
+                .then(r => r.json()).then(d => { if(d.error) { exibirAlerta("Aviso", d.error); } else { iniciarRadarMaquininha(maqAlvo); iniciarCronometro(); } }).catch(e => voltarInicio());
+            }
+
+            function pagarPix() {
+                mostrarTela('tela-pix'); 
+                document.getElementById('loading-pix').style.display = 'block'; 
+                document.getElementById('area-qrcode').style.display = 'none';
+                
+                fetch('/api/gerar_pix', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id_maquina: maqAlvo, tempo: tempoAlvo}) })
+                .then(r => r.json()).then(d => { 
+                    if (d.success) { 
+                        document.getElementById('loading-pix').style.display = 'none'; 
+                        document.getElementById('area-qrcode').style.display = 'block'; 
+                        document.getElementById('imgPix').src = "data:image/jpeg;base64," + d.qr_code_base64; 
+                        iniciarRadarPix(maqAlvo); 
+                        iniciarCronometro(); 
+                    } else { 
+                        exibirAlerta("Aviso", "Não foi possível gerar o código PIX no momento. Tente novamente ou use cartão."); 
+                    } 
+                }).catch(e => voltarInicio());
+            }
+
+            function cancelarTransacao() { fetch('/api/cancelar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo }) }); voltarInicio(); }
+
+            function iniciarRadarMaquininha(id) { 
+                intervaloFisico = setInterval(async () => { 
+                    try { 
+                        let resMp = await fetch('/api/verificar_pagamento_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: id }) });
+                        let dataMp = await resMp.json();
+                        if (dataMp.status === 'APPROVED') { clearInterval(intervaloFisico); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-sucesso'); setTimeout(() => window.location.reload(), 4000); return; } 
+                        else if (dataMp.status === 'REJECTED') { clearInterval(intervaloFisico); exibirAlerta("Operação Cancelada", "O pagamento foi cancelado na maquininha."); return; }
+                        let res = await fetch('/api/status_geral?t=' + new Date().getTime()); let statusCache = await res.json(); let st = statusCache[id] || "DISPONIVEL"; 
+                        if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { clearInterval(intervaloFisico); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-sucesso'); setTimeout(() => window.location.reload(), 4000); } 
+                    } catch(e) { } 
+                }, 2500); 
+            }
+
+            function iniciarRadarPix(id) { 
+                intervaloPix = setInterval(async () => { 
+                    try { 
+                        let res = await fetch('/api/status_geral?t=' + new Date().getTime()); let statusCache = await res.json(); let st = statusCache[id] || "DISPONIVEL"; 
+                        if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { clearInterval(intervaloPix); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-sucesso'); setTimeout(() => window.location.reload(), 4000); } 
+                    } catch(e) {} 
+                }, 2500); 
+            }
+        </script>
+    </body></html>`);
+});
+
+// ==========================================
+// ⏰ O DESPERTADOR (HORÁRIO COMERCIAL 3 HORAS)
+// ==========================================
+setInterval(async () => {
+    console.log("[DESPERTADOR] Iniciando rotina de limpeza matinal (3h)...");
+    for (let id_maquina in CLIENTES) {
+        let config = CLIENTES[id_maquina];
+        if (config && config.device_id && !INTENTS_ATIVOS[id_maquina]) {
+            try {
+                const ordemFantasma = { amount: 100, description: `Despertador`, additional_info: { external_reference: `ping`, print_on_terminal: false } };
+                const resp = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemFantasma, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
+                
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                try { await axios.delete(`https://api.mercadopago.com/point/integration-api/payment-intents/${resp.data.id}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); } catch(e) {}
+                
+            } catch (e) {
+                console.log(`[DESPERTADOR] Falha ao acordar ${id_maquina}.`);
+            }
+        }
+    }
+}, 3 * 60 * 60 * 1000); 
+
+// ==========================================
+// 🔄 ROTINA DE AUTO-PING (Anti-Standby do Render)
+// ==========================================
+app.get('/api/autoping', (req, res) => res.send('pong'));
+
+setInterval(async () => {
+    try {
+        await axios.get('https://lavanderia-server.onrender.com/api/autoping');
+        console.log('[AUTO-PING] Servidor chamado com sucesso para evitar a pausa de 15 minutos.');
+    } catch (e) {
+        console.log('[AUTO-PING] Erro ao tentar chamar a si mesmo.');
+    }
+}, 10 * 60 * 1000); 
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
