@@ -18,6 +18,14 @@ app.get('/', (req, res, next) => {
 app.use(express.static('public'));
 
 const MASTER_SHEET_ID = "19427ddGD6PLr38I_hELCd6OhA89UycUyTNt-h7Exb8I";
+
+// ==========================================
+// 🔐 CONFIGURAÇÕES OAUTH MERCADO PAGO
+// ==========================================
+const MP_CLIENT_SECRET = process.env.MP_CLIENT_SECRET || 'COLE_SEU_CLIENT_SECRET_AQUI'; 
+const REDIRECT_URI = 'https://lavanderia-server.onrender.com/mp-callback';
+// ==========================================
+
 let CLIENTES = {}; 
 let STATUS_CACHE = {};
 let INTENTS_ATIVOS = {};
@@ -32,6 +40,135 @@ function getGoogleAuth() {
         scopes: ['https://www.googleapis.com/auth/spreadsheets'], 
     });
 }
+
+// ==========================================
+// 🔗 ROTA DE INTEGRAÇÃO OAUTH (CALLBACK)
+// ==========================================
+app.get('/mp-callback', async (req, res) => {
+    const authCode = req.query.code; 
+    const idFranqueado = req.query.state; 
+
+    if (!authCode) return res.status(400).send('Código ausente. Processo cancelado.');
+
+    try {
+        const response = await axios.post('https://api.mercadopago.com/oauth/token', {
+            grant_type: 'authorization_code',
+            code: authCode,
+            redirect_uri: REDIRECT_URI,
+            client_secret: MP_CLIENT_SECRET
+        }, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+
+        const { access_token, refresh_token } = response.data;
+        const dataAtual = new Date().toISOString(); 
+
+        const auth = getGoogleAuth();
+        const sheets = google.sheets({ version: 'v4', auth });
+        
+        const getRes = await sheets.spreadsheets.values.get({
+            spreadsheetId: MASTER_SHEET_ID,
+            range: 'Tokens_MP!A:D'
+        });
+
+        const linhas = getRes.data.values || [];
+        let linhaIndex = -1;
+
+        for (let i = 1; i < linhas.length; i++) {
+            if (linhas[i][0] === idFranqueado) {
+                linhaIndex = i + 1; 
+                break;
+            }
+        }
+
+        if (linhaIndex !== -1) {
+            await sheets.spreadsheets.values.update({
+                spreadsheetId: MASTER_SHEET_ID,
+                range: `Tokens_MP!A${linhaIndex}:D${linhaIndex}`,
+                valueInputOption: 'RAW',
+                requestBody: { values: [[idFranqueado, access_token, refresh_token, dataAtual]] }
+            });
+        } else {
+            await sheets.spreadsheets.values.append({
+                spreadsheetId: MASTER_SHEET_ID,
+                range: 'Tokens_MP!A:D',
+                valueInputOption: 'RAW',
+                insertDataOption: 'INSERT_ROWS',
+                requestBody: { values: [[idFranqueado, access_token, refresh_token, dataAtual]] }
+            });
+        }
+
+        console.log(`[OAUTH] Sucesso! Chaves gravadas no Sheets para a loja: ${idFranqueado}`);
+        res.send(`
+            <div style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h1 style="color: #27ae60;">Integração Concluída! ✅</h1>
+                <p style="font-size: 18px;">As permissões do Mercado Pago foram vinculadas ao totem de autoatendimento.</p>
+                <p style="color: #7f8c8d;">Você já pode fechar esta página.</p>
+            </div>
+        `);
+
+    } catch (error) {
+        console.error('[OAUTH] Erro:', error.response ? error.response.data : error.message);
+        res.status(500).send('<h2>Erro na integração. Contate o administrador.</h2>');
+    }
+});
+
+// ==========================================
+// 🔄 MOTOR DE RENOVAÇÃO AUTOMÁTICA DE TOKENS
+// ==========================================
+async function renovarTokensVencidos() {
+    console.log("[OAUTH] Rodando scanner diário de renovação de tokens...");
+    try {
+        const auth = getGoogleAuth();
+        const sheets = google.sheets({ version: 'v4', auth });
+        
+        const getRes = await sheets.spreadsheets.values.get({
+            spreadsheetId: MASTER_SHEET_ID,
+            range: 'Tokens_MP!A:D'
+        });
+
+        const linhas = getRes.data.values;
+        if (!linhas || linhas.length <= 1) return;
+
+        const agora = new Date();
+
+        for (let i = 1; i < linhas.length; i++) {
+            const [idFranqueado, access_token, refresh_token, dataGravada] = linhas[i];
+            
+            if (!refresh_token || !dataGravada) continue;
+
+            const dataAtualizacao = new Date(dataGravada);
+            const diasPassados = (agora - dataAtualizacao) / (1000 * 60 * 60 * 24);
+
+            if (diasPassados > 150) {
+                console.log(`[OAUTH] Token de ${idFranqueado} vencendo. Renovando...`);
+                try {
+                    const response = await axios.post('https://api.mercadopago.com/oauth/token', {
+                        client_secret: MP_CLIENT_SECRET,
+                        grant_type: 'refresh_token',
+                        refresh_token: refresh_token
+                    }, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+
+                    const novoAccess = response.data.access_token;
+                    const novoRefresh = response.data.refresh_token;
+                    const novaDataIso = new Date().toISOString();
+                    const linhaIndex = i + 1;
+
+                    await sheets.spreadsheets.values.update({
+                        spreadsheetId: MASTER_SHEET_ID,
+                        range: `Tokens_MP!A${linhaIndex}:D${linhaIndex}`,
+                        valueInputOption: 'RAW',
+                        requestBody: { values: [[idFranqueado, novoAccess, novoRefresh, novaDataIso]] }
+                    });
+                    console.log(`[OAUTH] Sucesso! Token de ${idFranqueado} renovado.`);
+                } catch (err) {
+                    console.error(`[OAUTH] Erro ao renovar token de ${idFranqueado}:`, err.response ? err.response.data : err.message);
+                }
+            }
+        }
+    } catch (err) {
+        console.error("[OAUTH] Erro crítico no motor de renovação:", err.message);
+    }
+}
+setInterval(renovarTokensVencidos, 24 * 60 * 60 * 1000);
 
 async function forcarCancelamentoMP(deviceId, intentId, token) {
     try {
@@ -180,11 +317,18 @@ function executarDisparo(idMaquina, parametro) {
     }
 }
 
+// ==========================================
+// 🛠️ PAINEL ADMIN (COM TRAVAS DE SEGURANÇA)
+// ==========================================
 app.get('/painel', (req, res) => {
     const donoLogado = req.cookies.dono;
     if (!donoLogado) {
         return res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#2c3e50;margin:0}.card{background:white;padding:2rem;border-radius:10px;text-align:center;width:90%;max-width:320px}input{width:100%;padding:10px;margin-bottom:10px}button{width:100%;padding:10px;background:#27ae60;color:white;border:none;border-radius:5px}</style></head><body><div class="card"><h2>Unileve Admin</h2><form action="/login" method="POST"><input type="text" name="usuario" placeholder="Usuário" required><input type="password" name="senha" placeholder="Senha" required><button type="submit">ENTRAR</button></form></div></body></html>`);
     }
+
+    // Identifica se é a engenharia acessando para mostrar botões LIGA e START
+    const nome = donoLogado.toLowerCase();
+    const isEngenharia = (nome === 'engenharia' || nome === 'fabio' || nome === 'cpmi');
 
     let maquinasDoDono = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono === donoLogado).sort((a, b) => {
         let isSecA = a.toLowerCase().includes('sec'); 
@@ -203,23 +347,41 @@ app.get('/painel', (req, res) => {
         let dadosAtuais = CACHE_DADOS_MAQUINAS[id] || { preco_lavar: "0", preco_secar: "0", tempo: "45", preco_promo: "", dia_promo: "", hora_inicio: "", hora_fim: "" };
         let precoAtivo = isSecadora ? dadosAtuais.preco_secar : dadosAtuais.preco_lavar;
         
+        // 1. BOTÕES RESTRITOS DA ENGENHARIA (LIGA E START)
+        let botoesEngenharia = "";
+        if (isEngenharia) {
+            botoesEngenharia = `
+                <div style="display:flex; gap:10px; margin-bottom:10px;">
+                    <button onclick="acionar('${id}', 'CMD_LIGA')" style="flex:1; background:#8e44ad; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; font-size:12px; cursor:pointer;">🔌 FORÇAR LIGA</button>
+                    <button onclick="acionar('${id}', 'CMD_START')" style="flex:1; background:#34495e; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; font-size:12px; cursor:pointer;">▶️ FORÇAR START</button>
+                </div>
+                <hr style="border: 0; border-top: 1px solid #eee; margin-bottom: 10px;">
+            `;
+        }
+
+        // 2. BOTÕES DE CICLO LIBERADOS PARA TODOS (Franqueado e Engenharia)
         let botaoCicloNormal = "";
         if (isSecadora) {
-            botaoCicloNormal = `<button onclick="acionar('${id}', 'SECAR:${dadosAtuais.tempo}')" style="width:100%; background:#e67e22; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer;">🔥 FORÇAR SECAR (${dadosAtuais.tempo} MIN)</button>`;
+            botaoCicloNormal = `<button onclick="acionar('${id}', 'SECAR:${dadosAtuais.tempo}')" style="width:100%; background:#e67e22; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer; margin-bottom:8px;">🔥 FORÇAR SECAR (${dadosAtuais.tempo} MIN)</button>`;
         } else {
-            botaoCicloNormal = `<button onclick="acionar('${id}', 'CMD_45')" style="width:100%; background:#2980b9; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer; margin-bottom:8px;">💧 FORÇAR LAVAR 45M</button><button onclick="acionar('${id}', 'CMD_ENXAGUE')" style="width:100%; background:#1abc9c; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer;">🌀 SÓ ENXÁGUE/CENTR.</button>`;
+            botaoCicloNormal = `<button onclick="acionar('${id}', 'CMD_45')" style="width:100%; background:#2980b9; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer; margin-bottom:8px;">💧 FORÇAR LAVAR 45M</button>
+                                <button onclick="acionar('${id}', 'CMD_ENXAGUE')" style="width:100%; background:#1abc9c; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer; margin-bottom:8px;">🌀 SÓ ENXÁGUE/CENTR.</button>`;
         }
 
         return `<div class="card" style="background:white; padding:15px; border-radius:8px; margin-bottom:15px; box-shadow:0 2px 4px rgba(0,0,0,0.1)">
             <h3>${id.toUpperCase()}</h3>
             <span id="badge-${id}" style="background:${corBadge};color:white;padding:4px 8px;border-radius:4px;font-size:12px; font-weight:bold;">${textoBadge}</span>
             <div id="status-texto-${id}" style="margin-top:10px; font-family:monospace; font-size:14px; color:#2c3e50; font-weight:bold; background:#e8f4f8; padding:8px; border-radius:4px;">${statusReal}</div>
-            <div style="display:flex; gap:10px; margin-top:10px;">
+            
+            <div style="display:flex; gap:10px; margin-top:10px; margin-bottom:15px;">
                 <div style="flex:1; background:#d4edda; color:#155724; padding:8px; border-radius:4px; font-size:14px; font-weight:bold;">💰 Atual: R$ ${precoAtivo}</div>
                 <div style="flex:1; background:#d1ecf1; color:#0c5460; padding:8px; border-radius:4px; font-size:14px; font-weight:bold;">⏱️ Ciclo: ${dadosAtuais.tempo} min</div>
             </div>
-            <div style="margin-top:15px;">${botaoCicloNormal}</div>
-            <button onclick="acionar('${id}', 'CMD_RESET')" style="width:100%; margin-top:8px; background:#c0392b; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; cursor:pointer;">🚨 RESET DE EMERGÊNCIA</button>
+            
+            ${botoesEngenharia}
+            ${botaoCicloNormal}
+            
+            <button onclick="acionar('${id}', 'CMD_RESET')" style="width:100%; background:#c0392b; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; cursor:pointer;">🚨 RESET DE EMERGÊNCIA</button>
         </div>`;
     }).join('');
 
@@ -395,7 +557,7 @@ app.post('/webhook', async (req, res) => {
 app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
 app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
 
-// --- TOTEM VIEW ---
+// --- TOTEM VIEW ORIGINAL (MANTIDA PARA OS TABLETS ANTIGOS) ---
 app.get('/totem/:donoUrl', (req, res) => {
     const donoRequisitado = req.params.donoUrl.toLowerCase();
     let maquinasDaLoja = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono.toLowerCase() === donoRequisitado);
@@ -556,29 +718,32 @@ app.get('/totem/:donoUrl', (req, res) => {
 });
 
 // ==========================================
-// ⏰ O DESPERTADOR (HORÁRIO COMERCIAL 3 HORAS)
+// 📱 API PARA O APLICATIVO NATIVO (ANDROID)
 // ==========================================
-setInterval(async () => {
-    console.log("[DESPERTADOR] Iniciando rotina de limpeza matinal (3h)...");
-    for (let id_maquina in CLIENTES) {
-        let config = CLIENTES[id_maquina];
-        if (config && config.device_id && !INTENTS_ATIVOS[id_maquina]) {
-            try {
-                const ordemFantasma = { amount: 100, description: `Despertador`, additional_info: { external_reference: `ping`, print_on_terminal: false } };
-                const resp = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemFantasma, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
-                
-                await new Promise(resolve => setTimeout(resolve, 3000));
-                try { await axios.delete(`https://api.mercadopago.com/point/integration-api/payment-intents/${resp.data.id}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); } catch(e) {}
-                
-            } catch (e) {
-                console.log(`[DESPERTADOR] Falha ao acordar ${id_maquina}.`);
-            }
-        }
-    }
-}, 3 * 60 * 60 * 1000); 
+app.get('/api/maquinas/:donoUrl', (req, res) => {
+    const donoRequisitado = req.params.donoUrl.toLowerCase();
+    
+    let maquinasDaLoja = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono.toLowerCase() === donoRequisitado);
+
+    let respostaJson = maquinasDaLoja.map(id => {
+        let statusReal = STATUS_CACHE[id] || "DISPONIVEL";
+        let isSecadora = id.toLowerCase().includes('sec');
+        let dadosAtuais = CACHE_DADOS_MAQUINAS[id] || { preco_lavar: "0", preco_secar: "0", tempo: "45" };
+        
+        return {
+            id: id,
+            tipo: isSecadora ? "SECAR" : "LAVAR",
+            preco: isSecadora ? dadosAtuais.preco_secar : dadosAtuais.preco_lavar,
+            tempo: dadosAtuais.tempo,
+            status: statusReal
+        };
+    });
+
+    res.json(respostaJson);
+});
 
 // ==========================================
-// 🔄 ROTINA DE AUTO-PING (Anti-Standby do Render)
+// 🔄 ROTINA DE AUTO-PING (MANTIDA PARA TESTES)
 // ==========================================
 app.get('/api/autoping', (req, res) => res.send('pong'));
 
