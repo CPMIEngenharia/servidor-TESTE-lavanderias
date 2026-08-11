@@ -18,14 +18,6 @@ app.get('/', (req, res, next) => {
 app.use(express.static('public'));
 
 const MASTER_SHEET_ID = "19427ddGD6PLr38I_hELCd6OhA89UycUyTNt-h7Exb8I";
-
-// ==========================================
-// 🔐 CONFIGURAÇÕES OAUTH MERCADO PAGO
-// ==========================================
-const MP_CLIENT_SECRET = process.env.MP_CLIENT_SECRET || 'COLE_SEU_CLIENT_SECRET_AQUI'; 
-const REDIRECT_URI = 'https://lavanderia-server.onrender.com/mp-callback';
-// ==========================================
-
 let CLIENTES = {}; 
 let STATUS_CACHE = {};
 let INTENTS_ATIVOS = {};
@@ -41,149 +33,6 @@ function getGoogleAuth() {
     });
 }
 
-// ==========================================
-// 🔗 ROTA DE INTEGRAÇÃO OAUTH (CALLBACK)
-// ==========================================
-app.get('/mp-callback', async (req, res) => {
-    const authCode = req.query.code; 
-    const idFranqueado = req.query.state; 
-
-    if (!authCode) return res.status(400).send('Código ausente. Processo cancelado.');
-
-    try {
-        const response = await axios.post('https://api.mercadopago.com/oauth/token', {
-            grant_type: 'authorization_code',
-            code: authCode,
-            redirect_uri: REDIRECT_URI,
-            client_secret: MP_CLIENT_SECRET
-        }, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-
-        const { access_token, refresh_token } = response.data;
-        const dataAtual = new Date().toISOString(); 
-
-        const auth = getGoogleAuth();
-        const sheets = google.sheets({ version: 'v4', auth });
-        
-        const getRes = await sheets.spreadsheets.values.get({
-            spreadsheetId: MASTER_SHEET_ID,
-            range: 'Tokens_MP!A:D'
-        });
-
-        const linhas = getRes.data.values || [];
-        let linhaIndex = -1;
-
-        for (let i = 1; i < linhas.length; i++) {
-            if (linhas[i][0] === idFranqueado) {
-                linhaIndex = i + 1; 
-                break;
-            }
-        }
-
-        if (linhaIndex !== -1) {
-            await sheets.spreadsheets.values.update({
-                spreadsheetId: MASTER_SHEET_ID,
-                range: `Tokens_MP!A${linhaIndex}:D${linhaIndex}`,
-                valueInputOption: 'RAW',
-                requestBody: { values: [[idFranqueado, access_token, refresh_token, dataAtual]] }
-            });
-        } else {
-            await sheets.spreadsheets.values.append({
-                spreadsheetId: MASTER_SHEET_ID,
-                range: 'Tokens_MP!A:D',
-                valueInputOption: 'RAW',
-                insertDataOption: 'INSERT_ROWS',
-                requestBody: { values: [[idFranqueado, access_token, refresh_token, dataAtual]] }
-            });
-        }
-
-        console.log(`[OAUTH] Sucesso! Chaves gravadas no Sheets para a loja: ${idFranqueado}`);
-        res.send(`
-            <div style="font-family: sans-serif; text-align: center; padding: 50px;">
-                <h1 style="color: #27ae60;">Integração Concluída! ✅</h1>
-                <p style="font-size: 18px;">As permissões do Mercado Pago foram vinculadas ao totem de autoatendimento.</p>
-                <p style="color: #7f8c8d;">Você já pode fechar esta página.</p>
-            </div>
-        `);
-
-    } catch (error) {
-        console.error('[OAUTH] Erro:', error.response ? error.response.data : error.message);
-        res.status(500).send('<h2>Erro na integração. Contate o administrador.</h2>');
-    }
-});
-
-// ==========================================
-// 🔄 MOTOR DE RENOVAÇÃO AUTOMÁTICA DE TOKENS
-// ==========================================
-async function renovarTokensVencidos() {
-    console.log("[OAUTH] Rodando scanner diário de renovação de tokens...");
-    try {
-        const auth = getGoogleAuth();
-        const sheets = google.sheets({ version: 'v4', auth });
-        
-        const getRes = await sheets.spreadsheets.values.get({
-            spreadsheetId: MASTER_SHEET_ID,
-            range: 'Tokens_MP!A:D'
-        });
-
-        const linhas = getRes.data.values;
-        if (!linhas || linhas.length <= 1) return;
-
-        const agora = new Date();
-
-        for (let i = 1; i < linhas.length; i++) {
-            const [idFranqueado, access_token, refresh_token, dataGravada] = linhas[i];
-            
-            if (!refresh_token || !dataGravada) continue;
-
-            const dataAtualizacao = new Date(dataGravada);
-            const diasPassados = (agora - dataAtualizacao) / (1000 * 60 * 60 * 24);
-
-            if (diasPassados > 150) {
-                console.log(`[OAUTH] Token de ${idFranqueado} vencendo. Renovando...`);
-                try {
-                    const response = await axios.post('https://api.mercadopago.com/oauth/token', {
-                        client_secret: MP_CLIENT_SECRET,
-                        grant_type: 'refresh_token',
-                        refresh_token: refresh_token
-                    }, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-
-                    const novoAccess = response.data.access_token;
-                    const novoRefresh = response.data.refresh_token;
-                    const novaDataIso = new Date().toISOString();
-                    const linhaIndex = i + 1;
-
-                    await sheets.spreadsheets.values.update({
-                        spreadsheetId: MASTER_SHEET_ID,
-                        range: `Tokens_MP!A${linhaIndex}:D${linhaIndex}`,
-                        valueInputOption: 'RAW',
-                        requestBody: { values: [[idFranqueado, novoAccess, novoRefresh, novaDataIso]] }
-                    });
-                    console.log(`[OAUTH] Sucesso! Token de ${idFranqueado} renovado.`);
-                } catch (err) {
-                    console.error(`[OAUTH] Erro ao renovar token de ${idFranqueado}:`, err.response ? err.response.data : err.message);
-                }
-            }
-        }
-    } catch (err) {
-        console.error("[OAUTH] Erro crítico no motor de renovação:", err.message);
-    }
-}
-setInterval(renovarTokensVencidos, 24 * 60 * 60 * 1000);
-
-async function forcarCancelamentoMP(deviceId, intentId, token) {
-    try {
-        await axios.delete(`https://api.mercadopago.com/point/integration-api/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${token}` } });
-        return true;
-    } catch (e1) {
-        try {
-            await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${deviceId}/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${token}` } });
-            return true;
-        } catch (e2) {
-            return false;
-        }
-    }
-}
-
 async function carregarConfiguracoes() {
     try {
         const auth = getGoogleAuth();
@@ -195,19 +44,11 @@ async function carregarConfiguracoes() {
             for (let i = 1; i < linhas.length; i++) {
                 const [id, dono, token, sheet, maquininha, deviceId] = linhas[i];
                 if (id && dono) {
-                    CLIENTES[id.trim()] = { 
-                        dono: dono.trim(), 
-                        token_mp: token ? token.trim() : "", 
-                        sheet_id: sheet ? sheet.trim() : "", 
-                        usa_maquininha: maquininha && String(maquininha).trim().toUpperCase() === "SIM", 
-                        device_id: deviceId ? deviceId.trim() : "" 
-                    };
+                    CLIENTES[id.trim()] = { dono: dono.trim(), token_mp: token ? token.trim() : "", sheet_id: sheet ? sheet.trim() : "", usa_maquininha: maquininha && String(maquininha).trim().toUpperCase() === "SIM", device_id: deviceId ? deviceId.trim() : "" };
                 }
             }
         }
-    } catch (err) {
-        console.error("Erro ao carregar configurações: ", err.message);
-    }
+    } catch (err) {}
 }
 
 async function sincronizarPrecosPlanilhas() {
@@ -231,8 +72,7 @@ async function sincronizarPrecosPlanilhas() {
 
             for (let i = 1; i < linhas.length; i++) {
                 let idMaq = linhas[i][0];
-                if (!idMaq) continue; 
-                idMaq = idMaq.trim();
+                if (!idMaq) continue; idMaq = idMaq.trim();
                 
                 let pLavar = colLavar !== -1 && linhas[i][colLavar] ? linhas[i][colLavar].toString().replace('R$', '').replace(',', '.').trim() : "0";
                 let pSecar = colSecar !== -1 && linhas[i][colSecar] ? linhas[i][colSecar].toString().replace('R$', '').replace(',', '.').trim() : "0";
@@ -241,20 +81,10 @@ async function sincronizarPrecosPlanilhas() {
                 let dPromo = colDiaPromo !== -1 && linhas[i][colDiaPromo] ? linhas[i][colDiaPromo].toString().trim() : "";
                 let hInicio = colHoraInicio !== -1 && linhas[i][colHoraInicio] ? linhas[i][colHoraInicio].toString().trim() : "";
                 let hFim = colHoraFim !== -1 && linhas[i][colHoraFim] ? linhas[i][colHoraFim].toString().trim() : "";
-                
-                CACHE_DADOS_MAQUINAS[idMaq] = { 
-                    preco_lavar: pLavar, 
-                    preco_secar: pSecar, 
-                    tempo: tCiclo, 
-                    preco_promo: pPromo, 
-                    dia_promo: dPromo, 
-                    hora_inicio: hInicio, 
-                    hora_fim: hFim 
-                };
+
+                CACHE_DADOS_MAQUINAS[idMaq] = { preco_lavar: pLavar, preco_secar: pSecar, tempo: tCiclo, preco_promo: pPromo, dia_promo: dPromo, hora_inicio: hInicio, hora_fim: hFim };
             }
-        } catch (err) {
-            console.error("Erro ao sincronizar preços: ", err.message);
-        }
+        } catch (err) {}
     }
 }
 
@@ -277,111 +107,126 @@ async function autenticarUsuarioNaPlanilha(usuario, senha) {
         const response = await sheets.spreadsheets.values.get({ spreadsheetId: MASTER_SHEET_ID, range: 'Login!A:C' });
         const linhas = response.data.values;
         if (!linhas) return null;
-        
         const header = linhas[0];
         const colUser = header.findIndex(h => h.trim() === 'usuario_login');
         const colPass = header.findIndex(h => h.trim() === 'senha_acesso');
         const colDono = header.findIndex(h => h.trim() === 'dono');
-        
         const linhaUsuario = linhas.find(row => row[colUser] && row[colUser].trim() === usuario.trim() && row[colPass] && String(row[colPass]).trim() === String(senha).trim());
         return linhaUsuario ? linhaUsuario[colDono].trim() : null;
-    } catch (err) { 
-        return null; 
-    }
+    } catch (err) { return null; }
 }
 
 const mqttClient = mqtt.connect('mqtts://89c0f9913b464fe793a20c71d78ec5c6.s1.eu.hivemq.cloud:8883', { username: 'unileve', password: 'Unilevepassword1', rejectUnauthorized: false });
 mqttClient.on('connect', () => { mqttClient.subscribe('lavanderia/+/status'); });
 mqttClient.on('message', (topic, message) => {
     const partes = topic.split('/');
-    if (partes.length === 3 && partes[2] === 'status') {
-        STATUS_CACHE[partes[1]] = message.toString();
-    }
+    if (partes.length === 3 && partes[2] === 'status') STATUS_CACHE[partes[1]] = message.toString();
 });
 
+// ==========================================
+// O MOTOR CENTRALIZADO (RESOLVE TODOS OS BUGS)
+// ==========================================
+// ==========================================
+// O MOTOR CENTRALIZADO (COM FILTRO POR FRANQUIA)
+// ==========================================
+// ==========================================
+// O MOTOR CENTRALIZADO (O VERDADEIRO CÉREBRO)
+// ==========================================
 function executarDisparo(idMaquina, parametro) {
+    // ❌ Falsificação de status REMOVIDA. 
+    // A tela do cliente agora só vai dizer "Aprovado" quando a máquina ligar de verdade!
+    
     let tempoLimpo = String(parametro).replace(/[^0-9]/g, '');
     if (!tempoLimpo || tempoLimpo === "0") tempoLimpo = "45"; 
-    STATUS_CACHE[idMaquina] = "OCUPADA - INICIANDO";
 
     if (!idMaquina.toLowerCase().includes('sec')) {
+        // LAVADORAS: Comando antigo direto, à prova de falhas.
         mqttClient.publish(`lavanderia/${idMaquina}/comandos`, 'CMD_45', { qos: 1 });
     } else {
+        // SECADORAS: Tenta o comando novo
         mqttClient.publish(`lavanderia/${idMaquina}/comandos`, `SECAR:${tempoLimpo}`, { qos: 1 });
+        
+        // Damos 12 segundos (Tempo necessário para o Crash e Reboot da placa velha)
         setTimeout(() => {
             let st = STATUS_CACHE[idMaquina] || "DISPONIVEL";
+            
+            // Se a máquina não estiver fisicamente confirmada como ocupada...
             if (!st.includes("TEMPO:") && !st.includes("SECANDO") && !st.includes("OCUPADA") && !st.includes("LAVANDO")) {
+                console.log(`⚠️ [CRASH/PLACA ANTIGA DETETADA EM ${idMaquina}] Disparando CMD_SECAR`);
                 mqttClient.publish(`lavanderia/${idMaquina}/comandos`, 'CMD_SECAR', { qos: 1 });
+            } else {
+                console.log(`✅ [${idMaquina}] Comando inteligente aceite com sucesso!`);
             }
         }, 12000);
     }
 }
-
-// ==========================================
-// 🛠️ PAINEL ADMIN (COM TRAVAS DE SEGURANÇA)
-// ==========================================
+// --- ROTAS DO PAINEL E PLANILHA ---
 app.get('/painel', (req, res) => {
     const donoLogado = req.cookies.dono;
-    if (!donoLogado) {
-        return res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#2c3e50;margin:0}.card{background:white;padding:2rem;border-radius:10px;text-align:center;width:90%;max-width:320px}input{width:100%;padding:10px;margin-bottom:10px}button{width:100%;padding:10px;background:#27ae60;color:white;border:none;border-radius:5px}</style></head><body><div class="card"><h2>Unileve Admin</h2><form action="/login" method="POST"><input type="text" name="usuario" placeholder="Usuário" required><input type="password" name="senha" placeholder="Senha" required><button type="submit">ENTRAR</button></form></div></body></html>`);
-    }
-
-    // Identifica se é a engenharia acessando para mostrar botões LIGA e START
-    const nome = donoLogado.toLowerCase();
-    const isEngenharia = (nome === 'engenharia' || nome === 'fabio' || nome === 'cpmi');
+    if (!donoLogado) return res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#2c3e50;margin:0}.card{background:white;padding:2rem;border-radius:10px;text-align:center;width:90%;max-width:320px}input{width:100%;padding:10px;margin-bottom:10px}button{width:100%;padding:10px;background:#27ae60;color:white;border:none;border-radius:5px}</style></head><body><div class="card"><h2>Unileve Admin</h2><form action="/login" method="POST"><input type="text" name="usuario" placeholder="Usuário" required><input type="password" name="senha" placeholder="Senha" required><button type="submit">ENTRAR</button></form></div></body></html>`);
 
     let maquinasDoDono = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono === donoLogado).sort((a, b) => {
-        let isSecA = a.toLowerCase().includes('sec'); 
-        let isSecB = b.toLowerCase().includes('sec');
-        if (isSecA === isSecB) return a.localeCompare(b); 
-        return isSecA ? 1 : -1; 
+        let isSecA = a.toLowerCase().includes('sec'); let isSecB = b.toLowerCase().includes('sec');
+        if (isSecA === isSecB) return a.localeCompare(b); return isSecA ? 1 : -1; 
     });
 
     let htmlCards = maquinasDoDono.map(id => {
         let statusReal = STATUS_CACHE[id] || "AGUARDANDO...";
         let corBadge = "gray"; let textoBadge = "OFFLINE";
         if (statusReal.includes("DISPONIVEL")) { corBadge = "#27ae60"; textoBadge = "ONLINE"; } 
-        else if (statusReal.includes("LAVANDO") || statusReal.includes("ENXAGUE") || statusReal.includes("CENTRIF") || statusReal.includes("SECANDO") || statusReal.includes("TEMPO:") || statusReal.includes("OCUPADA")) { corBadge = "#e67e22"; textoBadge = "OCUPADA"; }
+        else if (statusReal.includes("LAVANDO") || statusReal.includes("ENXAGUE") || statusReal.includes("CENTRIF") || statusReal.includes("SECANDO") || statusReal.includes("TEMPO:")) { corBadge = "#e67e22"; textoBadge = "OCUPADA"; }
 
         const isSecadora = id.toLowerCase().includes('sec');
         let dadosAtuais = CACHE_DADOS_MAQUINAS[id] || { preco_lavar: "0", preco_secar: "0", tempo: "45", preco_promo: "", dia_promo: "", hora_inicio: "", hora_fim: "" };
         let precoAtivo = isSecadora ? dadosAtuais.preco_secar : dadosAtuais.preco_lavar;
         
-        // 1. BOTÕES RESTRITOS DA ENGENHARIA (LIGA E START)
-        let botoesEngenharia = "";
-        if (isEngenharia) {
-            botoesEngenharia = `
-                <div style="display:flex; gap:10px; margin-bottom:10px;">
-                    <button onclick="acionar('${id}', 'CMD_LIGA')" style="flex:1; background:#8e44ad; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; font-size:12px; cursor:pointer;">🔌 FORÇAR LIGA</button>
-                    <button onclick="acionar('${id}', 'CMD_START')" style="flex:1; background:#34495e; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; font-size:12px; cursor:pointer;">▶️ FORÇAR START</button>
-                </div>
-                <hr style="border: 0; border-top: 1px solid #eee; margin-bottom: 10px;">
-            `;
+        let txtPromo = "Nenhuma promoção programada.";
+        if (dadosAtuais.preco_promo && dadosAtuais.dia_promo) {
+            txtPromo = `<span style="font-size:16px;">R$ ${dadosAtuais.preco_promo}</span><br>${dadosAtuais.dia_promo} | ${dadosAtuais.hora_inicio || "00:00"} às ${dadosAtuais.hora_fim || "23:59"}`;
         }
 
-        // 2. BOTÕES DE CICLO LIBERADOS PARA TODOS (Franqueado e Engenharia)
-        let botaoCicloNormal = "";
-        if (isSecadora) {
-            botaoCicloNormal = `<button onclick="acionar('${id}', 'SECAR:${dadosAtuais.tempo}')" style="width:100%; background:#e67e22; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer; margin-bottom:8px;">🔥 FORÇAR SECAR (${dadosAtuais.tempo} MIN)</button>`;
-        } else {
-            botaoCicloNormal = `<button onclick="acionar('${id}', 'CMD_45')" style="width:100%; background:#2980b9; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer; margin-bottom:8px;">💧 FORÇAR LAVAR 45M</button>
-                                <button onclick="acionar('${id}', 'CMD_ENXAGUE')" style="width:100%; background:#1abc9c; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer; margin-bottom:8px;">🌀 SÓ ENXÁGUE/CENTR.</button>`;
-        }
+       let botaoCicloNormal = "";
+    if (isSecadora) {
+        botaoCicloNormal = `<button onclick="acionar('${id}', 'SECAR:${dadosAtuais.tempo}')" style="width:100%; background:#e67e22; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer;">🔥 FORÇAR SECAR (${dadosAtuais.tempo} MIN)</button>`;
+    } else {
+        botaoCicloNormal = `<button onclick="acionar('${id}', 'CMD_45')" style="width:100%; background:#2980b9; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer; margin-bottom:8px;">💧 FORÇAR LAVAR 45M</button><button onclick="acionar('${id}', 'CMD_ENXAGUE')" style="width:100%; background:#1abc9c; color:white; border:none; padding:15px; border-radius:4px; font-weight:bold; font-size:16px; cursor:pointer;">🌀 SÓ ENXÁGUE/CENTR.</button>`;
+    }
 
         return `<div class="card" style="background:white; padding:15px; border-radius:8px; margin-bottom:15px; box-shadow:0 2px 4px rgba(0,0,0,0.1)">
-            <h3>${id.toUpperCase()}</h3>
+            <h3 style="margin-top:0;">${id.toUpperCase()}</h3>
             <span id="badge-${id}" style="background:${corBadge};color:white;padding:4px 8px;border-radius:4px;font-size:12px; font-weight:bold;">${textoBadge}</span>
             <div id="status-texto-${id}" style="margin-top:10px; font-family:monospace; font-size:14px; color:#2c3e50; font-weight:bold; background:#e8f4f8; padding:8px; border-radius:4px;">${statusReal}</div>
-            
-            <div style="display:flex; gap:10px; margin-top:10px; margin-bottom:15px;">
+            <div style="display:flex; gap:10px; margin-top:10px;">
                 <div style="flex:1; background:#d4edda; color:#155724; padding:8px; border-radius:4px; font-size:14px; font-weight:bold;">💰 Atual: R$ ${precoAtivo}</div>
                 <div style="flex:1; background:#d1ecf1; color:#0c5460; padding:8px; border-radius:4px; font-size:14px; font-weight:bold;">⏱️ Ciclo: ${dadosAtuais.tempo} min</div>
             </div>
-            
-            ${botoesEngenharia}
-            ${botaoCicloNormal}
-            
-            <button onclick="acionar('${id}', 'CMD_RESET')" style="width:100%; background:#c0392b; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; cursor:pointer;">🚨 RESET DE EMERGÊNCIA</button>
+            <div style="margin-top:8px; background:#fff3cd; color:#856404; padding:8px; border-radius:4px; font-size:13px; border: 1px solid #ffeeba; text-align:center;">
+                <b>🎉 Promoção Programada:</b><br><span style="font-weight:normal;">${txtPromo}</span>
+            </div>
+            <div style="margin-top:15px; padding:10px; background:#f8f9fa; border-radius:8px; border:1px solid #ddd; text-align:left;">
+                <p style="font-size:12px; margin:0 0 5px 0; color:#333; font-weight:bold;">📝 Mudar Configuração Padrão:</p>
+                <div style="display:flex; gap:5px; margin-bottom:10px;">
+                    <input type="text" id="preco-${id}" placeholder="Preço Padrão" style="flex:1; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
+                    <input type="number" id="tempo-${id}" placeholder="Tempo (Min)" style="flex:1; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
+                </div>
+                <p style="font-size:12px; margin:0 0 5px 0; color:#e67e22; font-weight:bold;">🎉 Configurar Novo Happy Hour:</p>
+                <div style="display:flex; gap:5px; margin-bottom:5px;">
+                    <input type="text" id="preco_promo-${id}" placeholder="Preço Promo" style="flex:1; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
+                    <input type="text" id="dia_promo-${id}" placeholder="Dias" style="flex:1; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
+                </div>
+                <div style="display:flex; gap:5px;">
+                    <div style="flex:1; display:flex; flex-direction:column;"><label style="font-size:10px; color:#7f8c8d; font-weight:bold; margin-bottom:2px;">Hora Início:</label><input type="time" id="hora_inicio-${id}" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;"></div>
+                    <div style="flex:1; display:flex; flex-direction:column;"><label style="font-size:10px; color:#7f8c8d; font-weight:bold; margin-bottom:2px;">Hora Fim:</label><input type="time" id="hora_fim-${id}" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;"></div>
+                </div>
+                <button onclick="salvarPlanilha('${id}')" style="width:100%; margin-top:12px; background:#2c3e50; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; cursor:pointer;">💾 SALVAR PLANILHA</button>
+                <button onclick="encerrarPromo('${id}')" style="width:100%; margin-top:5px; background:#e74c3c; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; cursor:pointer;">❌ ENCERRAR PROMOÇÃO</button>
+            </div>
+            <div style="margin-top:15px;">${botaoCicloNormal}</div>
+            <div style="margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:5px;">
+                <button onclick="acionar('${id}', 'CMD_FORCA_LIGA')" style="background:#8e44ad; color:white; border:none; padding:8px; border-radius:4px; font-size:12px; cursor:pointer;">⚙️ FORÇAR LIGA</button>
+                <button onclick="acionar('${id}', 'CMD_FORCA_START')" style="background:#f1c40f; color:#333; border:none; padding:8px; border-radius:4px; font-size:12px; font-weight:bold; cursor:pointer;">⚙️ FORÇAR START</button>
+            </div>
+            <button onclick="acionar('${id}', 'CMD_RESET')" style="width:100%; margin-top:8px; background:#c0392b; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; cursor:pointer;">🚨 RESET DE EMERGÊNCIA</button>
         </div>`;
     }).join('');
 
@@ -390,110 +235,159 @@ app.get('/painel', (req, res) => {
         <hr>${htmlCards}
         <script>
         function acionar(id, cmd){ if(confirm('Enviar '+cmd+' para '+id+'?')) fetch('/api/acionar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,cmd})}).then(r=>r.json()).then(d=>alert(d.success?'Comando Enviado!':'Erro')) }
+        function salvarPlanilha(id) {
+            const preco = document.getElementById('preco-'+id).value, tempo = document.getElementById('tempo-'+id).value, preco_promo = document.getElementById('preco_promo-'+id).value, dia_promo = document.getElementById('dia_promo-'+id).value, hora_inicio = document.getElementById('hora_inicio-'+id).value, hora_fim = document.getElementById('hora_fim-'+id).value;
+            if(!preco && !tempo && !preco_promo && !dia_promo && !hora_inicio && !hora_fim) return alert('Preencha algo!');
+            fetch('/api/atualizar_planilha', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ id_maquina: id, preco, tempo, preco_promo, dia_promo, hora_inicio, hora_fim }) })
+            .then(r => r.json()).then(d => { if(d.success) { alert('✅ Salvo!'); window.location.reload(); } else alert('❌ Erro'); });
+        }
+        function encerrarPromo(id) {
+            if(confirm('Encerrar promoção e voltar ao preço normal?')) fetch('/api/atualizar_planilha', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ id_maquina: id, limpar_promo: true }) }).then(r => r.json()).then(d => { if(d.success) { alert('🗑️ Promoção Encerrada!'); window.location.reload(); } });
+        }
         setInterval(() => { fetch('/api/status_geral').then(res => res.json()).then(dados => {
             for (let id in dados) {
                 let badge = document.getElementById('badge-'+id); let statusBox = document.getElementById('status-texto-'+id);
-                if (badge) { let st = dados[id]; statusBox.innerText = st; if (st.includes("DISPONIVEL")) { badge.style.background = "#27ae60"; badge.innerText = "ONLINE"; } else if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { badge.style.background = "#e67e22"; badge.innerText = "OCUPADA"; } else { badge.style.background = "gray"; badge.innerText = "OFFLINE"; } }
+                if (badge) { let st = dados[id]; statusBox.innerText = st; if (st.includes("DISPONIVEL")) { badge.style.background = "#27ae60"; badge.innerText = "ONLINE"; } else if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:")) { badge.style.background = "#e67e22"; badge.innerText = "OCUPADA"; } else { badge.style.background = "gray"; badge.innerText = "OFFLINE"; } }
             }
         }) }, 2000); 
         </script>
     </body></html>`);
 });
 
-app.post('/api/atualizar_planilha', async (req, res) => { res.json({ success: true }); });
-app.get('/api/status_geral', (req, res) => { res.json(STATUS_CACHE); });
-app.post('/login', async (req, res) => { const nomeDono = await autenticarUsuarioNaPlanilha(req.body.usuario, req.body.senha); if (nomeDono) { res.cookie('dono', nomeDono, { httpOnly: true, maxAge: 86400000 }); res.redirect('/painel'); } else res.send(`Incorreto. <a href="/painel">Voltar</a>`); });
-app.get('/logout', (req, res) => { res.clearCookie('dono'); res.redirect('/painel'); });
-app.post('/api/acionar', (req, res) => { const { id, cmd } = req.body; if (cmd.includes('SECAR:')) { executarDisparo(id, cmd.split(':')[1]); } else { mqttClient.publish(`lavanderia/${id}/comandos`, cmd, { qos: 1 }); } res.json({ success: true }); });
+function getColLetter(colIndex) {
+    let letter = ''; while (colIndex >= 0) { letter = String.fromCharCode((colIndex % 26) + 65) + letter; colIndex = Math.floor(colIndex / 26) - 1; } return letter;
+}
 
-app.post('/api/verificar_pagamento_fisico', async (req, res) => {
-    const { id_maquina } = req.body;
-    const config = CLIENTES[id_maquina];
-    const intentId = INTENTS_ATIVOS[id_maquina];
-
-    if (!config || !intentId) return res.json({ status: 'NONE' });
-
+app.post('/api/atualizar_planilha', async (req, res) => {
+    const dono = req.cookies.dono; const { id_maquina, preco, tempo, preco_promo, dia_promo, hora_inicio, hora_fim, limpar_promo } = req.body;
+    if (!dono || !CLIENTES[id_maquina] || CLIENTES[id_maquina].dono !== dono) return res.status(403).json({ error: "Proibido" });
     try {
-        const response = await axios.get(`https://api.mercadopago.com/point/integration-api/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
-        const estado = response.data.state;
-        
-        if (estado === 'FINISHED') {
-            delete INTENTS_ATIVOS[id_maquina]; 
-            let tempo = '45'; 
-            if (response.data.additional_info && response.data.additional_info.external_reference) {
-                const partes = response.data.additional_info.external_reference.split('|');
-                if (partes[1]) tempo = partes[1];
-            }
-            executarDisparo(id_maquina, tempo);
-            return res.json({ status: 'APPROVED' });
-        } else if (estado === 'CANCELED' || estado === 'ERROR' || estado === 'ABANDONED') {
-            delete INTENTS_ATIVOS[id_maquina];
-            return res.json({ status: 'REJECTED' });
+        const sheetId = CLIENTES[id_maquina].sheet_id; const auth = getGoogleAuth(); const sheets = google.sheets({ version: 'v4', auth });
+        const response = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'A:Z' });
+        const linhas = response.data.values; const cabecalho = linhas[0];
+        const linhaIndex = linhas.findIndex(l => l[0] && l[0].trim() === id_maquina.trim());
+        if (linhaIndex === -1) return res.status(404).json({ error: "Máquina não achada" });
+
+        const rowNumber = linhaIndex + 1; 
+        const colPrecoIndex = cabecalho.findIndex(c => c && c.trim() === 'Preço Padrão');
+        const colTempoIndex = cabecalho.findIndex(c => c && (c.trim() === 'Tempo do Ciclo' || c.trim() === 'Tempo Padrão'));
+        const colPrecoPromoIndex = cabecalho.findIndex(c => c && c.trim() === 'Preço Promoção');
+        const colDiaPromoIndex = cabecalho.findIndex(c => c && c.trim() === 'Dia da Promoção');
+        const colHoraInicioIndex = cabecalho.findIndex(c => c && c.trim() === 'Hora Início');
+        const colHoraFimIndex = cabecalho.findIndex(c => c && c.trim() === 'Hora Fim');
+
+        async function atualizar(idx, val) { if (val && val !== "" && idx !== -1) await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${getColLetter(idx)}${rowNumber}`, valueInputOption: 'USER_ENTERED', requestBody: { values: [[val]] } }); }
+        async function limpar(idx) { if (idx !== -1) await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${getColLetter(idx)}${rowNumber}`, valueInputOption: 'USER_ENTERED', requestBody: { values: [[""]] } }); }
+
+        if (limpar_promo) {
+            await limpar(colPrecoPromoIndex); await limpar(colDiaPromoIndex); await limpar(colHoraInicioIndex); await limpar(colHoraFimIndex);
+        } else {
+            await atualizar(colPrecoIndex, preco); await atualizar(colTempoIndex, tempo); await atualizar(colPrecoPromoIndex, preco_promo); await atualizar(colDiaPromoIndex, dia_promo); await atualizar(colHoraInicioIndex, hora_inicio); await atualizar(colHoraFimIndex, hora_fim);
         }
-        res.json({ status: 'PENDING' });
-    } catch (e) {
-        res.json({ status: 'ERROR' });
-    }
+        setTimeout(sincronizarPrecosPlanilhas, 1000);
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ error: "Erro Planilha" }); }
 });
 
-app.post('/api/pagar_fisico', async (req, res) => {
-    let { id_maquina, tempo } = req.body; 
-    const config = CLIENTES[id_maquina];
-    if (!config || !config.device_id) return res.status(400).json({ error: "Máquina não configurada." });
-
-    if (INTENTS_ATIVOS[id_maquina]) {
-        forcarCancelamentoMP(config.device_id, INTENTS_ATIVOS[id_maquina], config.token_mp);
-        delete INTENTS_ATIVOS[id_maquina];
-    }
-
-    try {
-        const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
-        if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero na planilha." });
-
-        const ordemPagamento = { 
-            amount: Math.round(parseFloat(dados.preco) * 100), 
-            description: `Unileve - ${id_maquina}`, 
-            additional_info: { external_reference: `${id_maquina}|${dados.tempo}`, print_on_terminal: false } 
-        };
-        const response = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemPagamento, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
-        INTENTS_ATIVOS[id_maquina] = response.data.id; 
-        res.json({ success: true, intent_id: response.data.id });
-    } catch (error) { 
-        res.status(500).json({ error: "A maquininha não respondeu.<br><br>Se ela estiver na tela inicial, <b>TOQUE NO BOTÃO 'INSERIR VALOR'</b> nela para ativar o pagamento." }); 
-    }
+app.get('/api/status_geral', (req, res) => { res.json(STATUS_CACHE); });
+app.post('/login', async (req, res) => {
+    const nomeDono = await autenticarUsuarioNaPlanilha(req.body.usuario, req.body.senha);
+    if (nomeDono) { res.cookie('dono', nomeDono, { httpOnly: true, maxAge: 86400000 }); res.redirect('/painel'); } else res.send(`Incorreto. <a href="/painel">Voltar</a>`);
 });
-
-app.post('/api/cancelar_fisico', async (req, res) => {
-    const { id_maquina } = req.body; 
-    const config = CLIENTES[id_maquina]; 
-    if (!config) return res.json({ success: false });
+app.get('/logout', (req, res) => { 
+    res.clearCookie('dono', { path: '/' }); res.clearCookie('dono'); 
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); res.setHeader('Pragma', 'no-cache'); res.setHeader('Expires', '0');
+    res.send(`<script>window.location.href = '/painel';</script>`); 
+});
+app.post('/api/acionar', (req, res) => {
+    const dono = req.cookies.dono; const { id, cmd } = req.body;
+    if (!dono || !CLIENTES[id] || CLIENTES[id].dono !== dono) return res.status(403).json({ error: "Proibido" });
     
-    if (INTENTS_ATIVOS[id_maquina]) {
-        await forcarCancelamentoMP(config.device_id, INTENTS_ATIVOS[id_maquina], config.token_mp);
-        delete INTENTS_ATIVOS[id_maquina]; 
+    // A MÁGICA: Se o comando for do novo botão dinâmico (ex: SECAR:60), enviamos para o CÉREBRO!
+    if (cmd.includes('SECAR:')) {
+        let tempoParaSecar = cmd.split(':')[1];
+        executarDisparo(id, tempoParaSecar);
+    } else {
+        // Para os outros botões antigos (Lavagem, Só Enxague, Forçar Liga), mandamos direto.
+        mqttClient.publish(`lavanderia/${id}/comandos`, cmd, { qos: 1 }); 
     }
+    
     res.json({ success: true });
 });
 
+// ==========================================
+// CONTINUE COPIANDO A PARTE 2 ABAIXO
+// ==========================================
+// ==========================================
+// CONTINUAÇÃO (PARTE 2)
+// ==========================================
+
+app.get('/app/:id', async (req, res) => {
+    const id = req.params.id;
+    if (!CLIENTES[id]) return res.send("<h2>Erro: Máquina não encontrada.</h2>");
+    const config = CLIENTES[id];
+    const isSecadora = id.toLowerCase().includes('sec');
+    const tipoMaquina = isSecadora ? 'SECADORA' : 'LAVADORA';
+    const matchNumeros = id.match(/\d+$/);
+    const numeroMaquina = matchNumeros ? matchNumeros[0] : "";
+    let tipoPreco = isSecadora ? 'preco_secar' : 'preco_45';
+
+    let botaoFisicoHtml = config.usa_maquininha ? `<button onclick="pagarFisico('${id}','${tipoPreco}')" style="background:#e67e22; margin-top:15px;">💳 PAGAR NA MAQUININHA FÍSICA</button>` : '';
+
+    res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{text-align:center; font-family:sans-serif; padding:20px; background:#ecf0f1; margin:0;} .box{background:white; padding:20px; border-radius:15px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); margin-bottom: 20px;} button{width:100%; padding:20px; font-size:16px; border-radius:10px; border:none; color:white; font-weight:bold; cursor:pointer; margin-top:10px;} .btn-pix{background:#27ae60;} .btn-online{background:#8e44ad;} .btn-copiar{background:#34495e; padding:15px; font-size:14px;} #areaPix{display:none; margin-top:20px;} #imgPix{width:250px; height:250px; margin:10px auto; border:2px solid #bdc3c7; border-radius:10px; padding:10px;} #textoCopiaCola{width:100%; padding:10px; box-sizing:border-box; font-size:12px; margin-bottom:10px; word-break:break-all; background:#f8f9fa; border:1px solid #ddd; border-radius:5px;}</style></head><body>
+        <div class="box"><h1 style="margin:0; color:#2c3e50;">${tipoMaquina} ${numeroMaquina}</h1><p style="color:#7f8c8d; margin-top:5px;">Loja: ${config.dono}</p>
+            <div id="areaBotoes">
+                <button class="btn-pix" onclick="gerarPix('${id}','${tipoPreco}')">🟢 PAGAR COM PIX (RÁPIDO)</button>
+                <button class="btn-online" onclick="pagarOnline('${id}','${tipoPreco}')">💳 PAGAR CARTÃO NO CELULAR</button>
+                ${botaoFisicoHtml}
+            </div>
+            <div id="areaPix">
+                <h3 style="color:#27ae60;">Escaneie ou copie o código abaixo:</h3><img id="imgPix" src="" alt="QR Code Pix" /><textarea id="textoCopiaCola" rows="3" readonly></textarea><button class="btn-copiar" onclick="copiarPix()">📋 COPIAR PIX</button><p style="font-size:14px; color:#e67e22; margin-top:15px;">⏳ Aguardando pagamento...</p>
+            </div>
+            <div id="msgAprovado" style="display:none; margin-top:20px; color:#27ae60; font-weight:bold; font-size:24px;">✅ Pagamento Aprovado! <br><span style="font-size:16px; color:#333;">Sua máquina já foi liberada.</span></div>
+        </div>
+        <script>
+        function gerarPix(id, tempo){ 
+            document.getElementById('areaBotoes').innerHTML = "<p>⏳ Gerando PIX...</p>"; 
+            fetch('/api/gerar_pix', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id_maquina: id, tempo: tempo}) }).then(r => r.json()).then(d => {
+                if (d.success) { document.getElementById('areaBotoes').style.display = 'none'; document.getElementById('areaPix').style.display = 'block'; document.getElementById('imgPix').src = "data:image/jpeg;base64," + d.qr_code_base64; document.getElementById('textoCopiaCola').value = d.qr_code; iniciarMonitoramento(id); } else { alert('Erro.'); window.location.reload(); }
+            }).catch(e => { window.location.reload(); });
+        }
+        function pagarOnline(id, tempo){
+            document.getElementById('areaBotoes').innerHTML = "<p>⏳ Redirecionando...</p>";
+            fetch('/criar_pagamento', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id_maquina: id, tempo: tempo}) }).then(r => r.json()).then(d => {
+                if(d.init_point) window.location.href = d.init_point; else window.location.reload();
+            }).catch(e => window.location.reload());
+        }
+        function pagarFisico(id, tempo){
+            document.getElementById('areaBotoes').innerHTML = "<p>⏳ Acordando maquininha...</p>";
+            fetch('/api/pagar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: id, tempo: tempo }) }).then(r => r.json()).then(d => {
+                if(d.error) { alert("Atenção: " + d.error); window.location.reload(); } else { document.getElementById('areaBotoes').innerHTML = "<div style='font-size:60px;'>💳</div><p style='color:#27ae60; font-weight:bold;'>Insira o cartão na maquininha ao lado!</p>"; iniciarMonitoramento(id); }
+            }).catch(e => window.location.reload());
+        }
+        function copiarPix() { var copyText = document.getElementById("textoCopiaCola"); copyText.select(); navigator.clipboard.writeText(copyText.value).then(() => { alert("PIX copiado!"); }); }
+        function iniciarMonitoramento(id) { setInterval(async () => { try { let res = await fetch('/api/status_geral?t=' + new Date().getTime()); let statusCache = await res.json(); let st = statusCache[id] || "DISPONIVEL"; if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { document.getElementById('areaPix').style.display = 'none'; document.getElementById('areaBotoes').style.display = 'none'; document.getElementById('msgAprovado').style.display = 'block'; } } catch(e) {} }, 3000); }
+        </script>
+    </body></html>`);
+});
+
+// --- ROTEAMENTO COM METADATA FIXO ---
 app.post('/criar_pagamento', async (req, res) => {
     let { id_maquina, tempo } = req.body;
-    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; 
-    if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
-    
-    const config = CLIENTES[id_maquina]; 
-    if (!config) return res.status(400).json({ error: "Máquina não configurada" });
-    
+    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
+    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Máquina não configurada" });
+    if (STATUS_CACHE[id_maquina] && STATUS_CACHE[id_maquina].includes('TEMPO:')) return res.status(400).json({ error: "MÁQUINA EM USO." });
+
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
-        const preference = { 
-            items: [{ title: `Ciclo ${dados.tempo}min - ${id_maquina}`, unit_price: parseFloat(dados.preco), quantity: 1, currency_id: 'BRL' }], 
-            metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, 
-            payer: { email: `cliente_${Date.now()}@lavanderia.com` }, 
-            payment_methods: { excluded_payment_types: [{ id: "ticket" }, { id: "atm" }], installments: 1 }, 
-            notification_url: "https://lavanderia-server.onrender.com/webhook", 
-            auto_return: "approved", 
-            back_urls: { success: "https://lavanderia-server.onrender.com/sucesso", failure: "https://lavanderia-server.onrender.com/erro" } 
+
+        const preference = {
+            items: [{ title: `Ciclo ${dados.tempo}min - ${id_maquina}`, unit_price: parseFloat(dados.preco), quantity: 1, currency_id: 'BRL' }],
+            metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, payer: { email: `cliente_${Date.now()}@lavanderia.com` },
+            payment_methods: { excluded_payment_types: [{ id: "ticket" }, { id: "atm" }], installments: 1 },
+            notification_url: "https://lavanderia-v2.onrender.com/webhook", auto_return: "approved",
+            back_urls: { success: "https://lavanderia-v2.onrender.com/sucesso", failure: "https://lavanderia-v2.onrender.com/erro" }
         };
         const response = await axios.post('https://api.mercadopago.com/checkout/preferences', preference, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
         res.json({ status: 'ok', init_point: response.data.init_point });
@@ -502,38 +396,32 @@ app.post('/criar_pagamento', async (req, res) => {
 
 app.post('/api/gerar_pix', async (req, res) => {
     let { id_maquina, tempo } = req.body;
-    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; 
-    if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
-    
-    const config = CLIENTES[id_maquina]; 
-    if (!config) return res.status(400).json({ error: "Configuração não encontrada" });
+    if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
+    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Erro" });
 
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
-        if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero na planilha." });
-        const paymentData = { 
-            transaction_amount: parseFloat(dados.preco), 
-            description: `Unileve - ${id_maquina}`, 
-            payment_method_id: "pix", 
-            payer: { email: `c_${Date.now()}@mail.com` }, 
-            metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, 
-            notification_url: "https://lavanderia-server.onrender.com/webhook" 
-        };
+        if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
+
+        const paymentData = { transaction_amount: parseFloat(dados.preco), description: `Unileve - ${id_maquina}`, payment_method_id: "pix", payer: { email: `c_${Date.now()}@mail.com` }, metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, notification_url: "https://lavanderia-v2.onrender.com/webhook" };
         const response = await axios.post('https://api.mercadopago.com/v1/payments', paymentData, { headers: { 'Authorization': `Bearer ${config.token_mp}`, 'X-Idempotency-Key': `${id_maquina}-${Date.now()}` } });
         res.json({ success: true, qr_code_base64: response.data.point_of_interaction.transaction_data.qr_code_base64, qr_code: response.data.point_of_interaction.transaction_data.qr_code });
     } catch (e) { res.status(500).json({ error: "Erro Pix" }); }
 });
 
+// --- O CÉREBRO DE DESPACHO (CHAMA A FUNÇÃO CENTRAL) ---
 app.post('/webhook', async (req, res) => {
     let tipoEvento = req.query.type || req.body.type || req.body.action || req.query.topic;
+
     if (tipoEvento === 'point_integration_wh') {
         const info = req.body;
         if (info.state === 'FINISHED' && info.payment && info.payment.state === 'approved' && info.additional_info && info.additional_info.external_reference) {
             const partes = info.additional_info.external_reference.split('|');
-            if (partes[0] && partes[1]) executarDisparo(partes[0], partes[1]); 
+            if (partes[0] && partes[1]) executarDisparo(partes[0], partes[1]); // ID e Tempo
         }
         return res.sendStatus(200);
     }
+
     if (tipoEvento === 'payment' || tipoEvento === 'payment.created') {
         const idPagamento = (req.body.data && req.body.data.id) ? req.body.data.id : req.query['data.id'];
         if (idPagamento) {
@@ -543,8 +431,12 @@ app.post('/webhook', async (req, res) => {
                     const response = await axios.get(`https://api.mercadopago.com/v1/payments/${idPagamento}`, { headers: { 'Authorization': `Bearer ${token}` } });
                     if (response.data.status === 'approved') {
                         let maquina = null; let tempo = "45";
-                        if (response.data.metadata && response.data.metadata.maquina) { maquina = response.data.metadata.maquina; tempo = response.data.metadata.tempo_planilha || "45"; } 
-                        else if (response.data.external_reference && response.data.external_reference.includes('|')) { const partes = response.data.external_reference.split('|'); maquina = partes[0]; tempo = partes[1]; }
+                        if (response.data.metadata && response.data.metadata.maquina) { 
+                            maquina = response.data.metadata.maquina; 
+                            tempo = response.data.metadata.tempo_planilha || "45"; 
+                        } else if (response.data.external_reference && response.data.external_reference.includes('|')) { 
+                            const partes = response.data.external_reference.split('|'); maquina = partes[0]; tempo = partes[1]; 
+                        }
                         if (maquina) { executarDisparo(maquina, tempo); return res.sendStatus(200); }
                     }
                 } catch (err) {}
@@ -554,207 +446,64 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(200);
 });
 
-app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
-app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
+app.post('/api/pagar_fisico', async (req, res) => {
+    let { id_maquina, tempo } = req.body; const config = CLIENTES[id_maquina];
+    if (!config || !config.device_id) return res.status(400).json({ error: "Máquina não configurada." });
+    if (INTENTS_ATIVOS[id_maquina]) { try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${INTENTS_ATIVOS[id_maquina]}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); } catch(e) {} delete INTENTS_ATIVOS[id_maquina]; }
 
-// --- TOTEM VIEW ORIGINAL (MANTIDA PARA OS TABLETS ANTIGOS) ---
-app.get('/totem/:donoUrl', (req, res) => {
+    try {
+        const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
+        if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero." });
+        const ordemPagamento = { amount: Math.round(parseFloat(dados.preco) * 100), description: `Unileve - ${id_maquina}`, additional_info: { external_reference: `${id_maquina}|${dados.tempo}`, print_on_terminal: false } };
+        const response = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemPagamento, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
+        INTENTS_ATIVOS[id_maquina] = response.data.id; res.json({ success: true, intent_id: response.data.id });
+    } catch (error) { res.status(500).json({ error: "Erro na maquininha." }); }
+});
+
+app.post('/api/cancelar_fisico', async (req, res) => {
+    const { id_maquina } = req.body; const config = CLIENTES[id_maquina]; const intentId = INTENTS_ATIVOS[id_maquina];
+    if (!config || !intentId) return res.json({ success: false });
+    try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); delete INTENTS_ATIVOS[id_maquina]; } catch (e) {}
+    res.json({ success: true });
+});
+
+app.get('/limpar-fila/:id_maquina', async (req, res) => {
+    const id = req.params.id_maquina; const config = CLIENTES[id];
+    if (!config || !config.device_id) return res.send("Máquina sem DEVICE_ID");
+    try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); res.send("<h2 style='color:green;'>✅ Fila limpa!</h2>"); } catch (error) { res.send("<p>" + error.message + "</p>"); }
+});
+
+app.get('/totem/:donoUrl', (req, res) => { res.send(`<!DOCTYPE html><html><body style="text-align:center; padding:50px;"><h1>Totem Ativo</h1><p>Acesse POS Stone ou adesivos.</p></body></html>`); });
+
+app.get('/pos-stone/:donoUrl', (req, res) => {
     const donoRequisitado = req.params.donoUrl.toLowerCase();
     let maquinasDaLoja = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono.toLowerCase() === donoRequisitado);
-    if (maquinasDaLoja.length === 0) return res.send("<h1 style='text-align:center; margin-top:50px;'>Nenhuma máquina encontrada.</h1>");
+    if (maquinasDaLoja.length === 0) return res.send("<h1>Nenhuma máquina encontrada.</h1>");
 
-    let conjuntos = {};
+    let botoesLavar = ''; let botoesSecar = '';
     maquinasDaLoja.forEach(id => {
         let numero = (id.match(/\d+$/) || [id.toUpperCase()])[0];
-        if (!conjuntos[numero]) conjuntos[numero] = { lavadora: null, secadora: null };
-        if (id.toLowerCase().includes('sec')) conjuntos[numero].secadora = id;
-        else conjuntos[numero].lavadora = id;
+        let isOcupada = (STATUS_CACHE[id] || "").includes("TEMPO:") || (STATUS_CACHE[id] || "").includes("LAVANDO") || (STATUS_CACHE[id] || "").includes("OCUPADA");
+        let htmlBotao = `<button class="btn-maq ${isOcupada ? 'ocupada' : 'livre'}" onclick="${isOcupada ? "alert('Ocupada')" : `selecionarMaquina('${id}', '${numero}')`}">${numero}</button>`;
+        id.toLowerCase().includes('sec') ? botoesSecar += htmlBotao : botoesLavar += htmlBotao;
     });
 
-    let htmlConjuntos = '';
-    Object.keys(conjuntos).sort().forEach(num => {
-        let conj = conjuntos[num];
-        let btnSecadora = ''; let btnLavadora = '';
-        if (conj.secadora) {
-            let isOcupada = (STATUS_CACHE[conj.secadora] || "").includes("TEMPO:") || (STATUS_CACHE[conj.secadora] || "").includes("SECANDO") || (STATUS_CACHE[conj.secadora] || "").includes("OCUPADA");
-            btnSecadora = `<button class="btn-maq secadora ${isOcupada ? 'ocupada' : ''}" onclick="${isOcupada ? '' : `iniciarFluxo('${conj.secadora}', '${num}', 'secar')`}"><div class="icon">🔥</div><h3>SECADORA ${num}</h3><p>${isOcupada ? 'EM USO' : 'TOCAR PARA PAGAR'}</p></button>`;
-        }
-        if (conj.lavadora) {
-            let isOcupada = (STATUS_CACHE[conj.lavadora] || "").includes("TEMPO:") || (STATUS_CACHE[conj.lavadora] || "").includes("LAVANDO") || (STATUS_CACHE[conj.lavadora] || "").includes("OCUPADA");
-            btnLavadora = `<button class="btn-maq lavadora ${isOcupada ? 'ocupada' : ''}" onclick="${isOcupada ? '' : `iniciarFluxo('${conj.lavadora}', '${num}', 'lavar')`}"><div class="icon">💧</div><h3>LAVADORA ${num}</h3><p>${isOcupada ? 'EM USO' : 'TOCAR PARA PAGAR'}</p></button>`;
-        }
-        htmlConjuntos += `<div class="conjunto-card"><div class="conjunto-title">CONJUNTO ${num}</div>${btnSecadora}${btnLavadora}</div>`;
-    });
-
-    res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #eef2f5; margin: 0; padding: 0; user-select: none; }
-        .tela { display: none; min-height: 100vh; flex-direction: column; align-items: center; justify-content: center; width: 100%; box-sizing: border-box; padding: 20px; }
-        .tela.ativa { display: flex; }
-        #tela-principal { align-items: center; justify-content: flex-start; padding-top: 40px; }
-        .header-title { color: #34495e; text-align: center; margin-bottom: 30px; }
-        .header-title h1 { margin: 0; font-size: 32px; }
-        .header-title p { margin: 5px 0 0 0; color: #7f8c8d; font-size: 18px; }
-        .grid-conjuntos { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; max-width: 1200px; }
-        .conjunto-card { background: #fff; border-radius: 15px; padding: 20px; width: 260px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); display:flex; flex-direction:column; gap:15px; }
-        .conjunto-title { text-align: center; color: #7f8c8d; font-weight: bold; letter-spacing: 1px; font-size: 14px; }
-        .btn-maq { border: none; border-radius: 12px; padding: 20px 10px; color: white; cursor: pointer; transition: transform 0.1s; display: flex; flex-direction: column; align-items: center; justify-content: center; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
-        .btn-maq:active { transform: scale(0.97); }
-        .btn-maq h3 { margin: 10px 0 5px 0; font-size: 18px; }
-        .btn-maq p { margin: 0; font-size: 12px; font-weight: bold; background: rgba(0,0,0,0.2); padding: 5px 10px; border-radius: 20px; }
-        .btn-maq .icon { font-size: 35px; }
-        .secadora { background: linear-gradient(135deg, #e67e22, #d35400); }
-        .lavadora { background: linear-gradient(135deg, #3498db, #2980b9); }
-        .ocupada { filter: grayscale(100%); opacity: 0.6; cursor: not-allowed; }
-        .tela-escura { background: #2c3e50; color: white; text-align: center; }
-        .icon-gigante { font-size: 60px; margin-bottom: 10px; }
-        .box-aviso { max-width: 500px; width: 100%; }
-        .box-aviso h2 { color: #f1c40f; font-size: 30px; margin-bottom: 20px; }
-        .box-aviso p { font-size: 20px; line-height: 1.5; margin-bottom: 30px; }
-        .alerta-vermelho { background: rgba(231, 76, 60, 0.2); border: 1px solid #e74c3c; color: #e74c3c; padding: 10px; border-radius: 8px; font-size: 14px; font-weight: bold; margin-bottom: 30px; }
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-        .btn-acao { padding: 20px; font-size: 18px; font-weight: bold; color: white; border: none; border-radius: 10px; cursor: pointer; }
-        .btn-vermelho { background: #e74c3c; }
-        .btn-verde { background: #27ae60; }
-        .btn-pagamento { width: 100%; margin-bottom: 15px; padding: 25px; border-radius: 12px; border: none; color: white; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
-        .btn-pagamento.cartao { background: linear-gradient(135deg, #e74c3c, #c0392b); }
-        .btn-pagamento.pix { background: linear-gradient(135deg, #2ecc71, #27ae60); }
-        .btn-pagamento h3 { margin: 0 0 5px 0; font-size: 24px; }
-        .btn-pagamento p { margin: 0; font-size: 14px; opacity: 0.9; }
-        .btn-cancelar { background: transparent; border: 2px solid #7f8c8d; color: #bdc3c7; width: 100%; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; margin-top: 20px; cursor: pointer; }
-        .box-branca { background: white; padding: 20px; border-radius: 15px; display: inline-block; margin: 20px 0; }
-        #modal-alerta { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999; justify-content: center; align-items: center; }
-        .alerta-box { background: white; padding: 30px; border-radius: 15px; text-align: center; max-width: 400px; color: #2c3e50; }
-        .alerta-box h3 { color: #e74c3c; margin-top: 0; font-size: 24px; }
-        .alerta-btn { background: #34495e; color: white; border: none; padding: 15px 30px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 20px; width: 100%; }
-        .spinner { border: 4px solid rgba(255,255,255,0.3); border-radius: 50%; border-top: 4px solid #2ecc71; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    </style></head><body>
-        <div id="tela-principal" class="tela ativa"><div class="header-title"><h1>Bem-vindo à Unileve</h1><p>Toque na máquina que você deseja usar:</p></div><div class="grid-conjuntos">${htmlConjuntos}</div></div>
-        <div id="tela-atencao" class="tela tela-escura"><div class="box-aviso"><div class="icon-gigante">👕</div><h2>ATENÇÃO</h2><p id="txt-pergunta-roupa">Você já colocou as roupas na MÁQUINA e fechou a porta?</p><div class="alerta-vermelho">⚠️ Após o pagamento aprovado, a máquina iniciará automaticamente.</div><div class="grid-2"><button class="btn-acao btn-vermelho" onclick="voltarInicio()">NÃO, VOU COLOCAR</button><button class="btn-acao btn-verde" onclick="mostrarPagamento()">SIM, JÁ COLOQUEI!</button></div></div></div>
-        <div id="tela-pagamento" class="tela tela-escura"><div class="box-aviso"><h2 style="color:white; margin-bottom:40px;">Como deseja pagar?</h2><button class="btn-pagamento cartao" onclick="pagarCartao()"><h3>💳 CARTÃO</h3><p>Na maquininha ao lado</p></button><button class="btn-pagamento pix" onclick="pagarPix()"><h3>🟢 PIX</h3><p>Ler QR Code nesta tela</p></button><button class="btn-cancelar" onclick="voltarInicio()">CANCELAR</button></div></div>
-        <div id="tela-cartao" class="tela tela-escura"><div class="box-aviso"><div class="icon-gigante" style="color:#e74c3c;">💳</div><h2 style="color:white;">Vá até a maquininha ao lado!</h2><p id="txt-liberar-cartao">Aproxime ou insira seu cartão para liberar a MÁQUINA.</p><button class="btn-cancelar" onclick="cancelarTransacao()">CANCELAR COMPRA</button></div></div>
-        <div id="tela-pix" class="tela tela-escura"><div class="box-aviso"><h2 style="color:#2ecc71;">Pague com PIX</h2><p>Abra o app do seu banco e escaneie o código abaixo:</p><div id="loading-pix"><div class="spinner"></div><p>Gerando código PIX...</p></div><div id="area-qrcode" style="display:none;"><div class="box-branca"><img id="imgPix" src="" style="width:250px; height:250px; display:block;" /></div><p style="color:#f1c40f; font-size:16px;">A máquina iniciará automaticamente após o pagamento.</p></div><button class="btn-cancelar" onclick="voltarInicio()">CANCELAR COMPRA</button></div></div>
-        <div id="tela-sucesso" class="tela tela-escura"><div class="box-aviso"><div class="icon-gigante" style="color:#27ae60;">✅</div><h2 style="color:#27ae60; font-size:40px;">Pagamento Aprovado!</h2><p>A sua máquina foi iniciada com sucesso.</p></div></div>
-        
-        <div id="modal-alerta"><div class="alerta-box"><div class="icon-gigante">⏳</div><h3 id="alerta-titulo">Aviso</h3><p id="alerta-msg">Mensagem</p><button class="alerta-btn" onclick="fecharAlerta()">ENTENDIDO</button></div></div>
-
+    res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>body{font-family:sans-serif; text-align:center; background:#ecf0f1; margin:0;} .passo{display:none;} .ativo{display:block;} .btn-gigante{width:90%; padding:20px; font-size:20px; color:white; border:none; border-radius:10px; margin:10px auto; display:block;} .btn-maq{padding:20px; font-size:18px; color:white; border:none; border-radius:8px;} .livre{background:#34495e;} .ocupada{background:#95a5a6; opacity:0.5;} .grid{display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:20px;}</style></head><body>
+        <div style="background:#27ae60; color:white; padding:20px; font-size:24px; font-weight:bold;">Unileve POS</div>
+        <div id="passo1" class="passo ativo"><h2>O que deseja fazer?</h2><button class="btn-gigante" style="background:#2980b9;" onclick="irPasso2('lavar')">💧 LAVAR</button><button class="btn-gigante" style="background:#e67e22;" onclick="irPasso2('secar')">🔥 SECAR</button></div>
+        <div id="passo2" class="passo"><h2 id="tit2">Escolha a Máquina</h2><div id="listaL" class="grid" style="display:none;">${botoesLavar}</div><div id="listaS" class="grid" style="display:none;">${botoesSecar}</div></div>
+        <div id="passo3" class="passo"><h2>Como deseja pagar?</h2><button class="btn-gigante" style="background:#1abc9c;" onclick="chamarStone()">🟢 PIX</button><button class="btn-gigante" style="background:#8e44ad;" onclick="chamarStone()">💳 CARTÃO</button></div>
+        <div id="passo4" class="passo"><h2>Aprovado! ✅</h2><p>Máquina liberada.</p></div>
         <script>
-            let maqAlvo = ''; let nomeExibicao = ''; let tipoAlvo = ''; let tempoAlvo = '';
-            let intervaloFisico = null; let intervaloPix = null; let timerInatividade = null; 
-
-            function mostrarTela(id) { document.querySelectorAll('.tela').forEach(t => t.classList.remove('ativa')); document.getElementById(id).classList.add('ativa'); }
-            function voltarInicio() { if(intervaloFisico) clearInterval(intervaloFisico); if(intervaloPix) clearInterval(intervaloPix); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-principal'); }
-            function exibirAlerta(titulo, msg) { 
-                document.getElementById('alerta-titulo').innerText = titulo; 
-                document.getElementById('alerta-msg').innerHTML = msg; 
-                document.getElementById('modal-alerta').style.display = 'flex'; 
-            }
-            function fecharAlerta() { document.getElementById('modal-alerta').style.display = 'none'; voltarInicio(); }
-            
-            function iniciarCronometro() { 
-                if(timerInatividade) clearTimeout(timerInatividade); 
-                timerInatividade = setTimeout(() => { 
-                    if(intervaloFisico) clearInterval(intervaloFisico); 
-                    if(intervaloPix) clearInterval(intervaloPix);
-                    fetch('/api/cancelar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo }) });
-                    exibirAlerta("Tempo Esgotado", "Cancelamos a operação por inatividade.<br><br>Se a maquininha física continuar na tela de menus, por favor, toque no botão <b>'INSERIR VALOR'</b> nela para carregar o sistema."); 
-                }, 75000); 
-            }
-            
-            function iniciarFluxo(id, numero, tipo) { maqAlvo = id; tipoAlvo = tipo; nomeExibicao = (tipo === 'secar' ? 'SECADORA ' : 'LAVADORA ') + numero; tempoAlvo = (tipo === 'secar') ? 'preco_secar' : 'preco_45'; document.getElementById('txt-pergunta-roupa').innerText = 'Você já colocou as roupas na ' + nomeExibicao + ' e fechou a porta?'; document.getElementById('txt-liberar-cartao').innerText = 'Aproxime ou insira seu cartão para liberar a ' + nomeExibicao + '.'; mostrarTela('tela-atencao'); }
-            function mostrarPagamento() { mostrarTela('tela-pagamento'); }
-
-            function pagarCartao() {
-                mostrarTela('tela-cartao');
-                fetch('/api/pagar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo, tempo: tempoAlvo }) })
-                .then(r => r.json()).then(d => { if(d.error) { exibirAlerta("Aviso", d.error); } else { iniciarRadarMaquininha(maqAlvo); iniciarCronometro(); } }).catch(e => voltarInicio());
-            }
-
-            function pagarPix() {
-                mostrarTela('tela-pix'); 
-                document.getElementById('loading-pix').style.display = 'block'; 
-                document.getElementById('area-qrcode').style.display = 'none';
-                
-                fetch('/api/gerar_pix', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id_maquina: maqAlvo, tempo: tempoAlvo}) })
-                .then(r => r.json()).then(d => { 
-                    if (d.success) { 
-                        document.getElementById('loading-pix').style.display = 'none'; 
-                        document.getElementById('area-qrcode').style.display = 'block'; 
-                        document.getElementById('imgPix').src = "data:image/jpeg;base64," + d.qr_code_base64; 
-                        iniciarRadarPix(maqAlvo); 
-                        iniciarCronometro(); 
-                    } else { 
-                        exibirAlerta("Aviso", "Não foi possível gerar o código PIX no momento. Tente novamente ou use cartão."); 
-                    } 
-                }).catch(e => voltarInicio());
-            }
-
-            function cancelarTransacao() { fetch('/api/cancelar_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: maqAlvo }) }); voltarInicio(); }
-
-            function iniciarRadarMaquininha(id) { 
-                intervaloFisico = setInterval(async () => { 
-                    try { 
-                        let resMp = await fetch('/api/verificar_pagamento_fisico', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id_maquina: id }) });
-                        let dataMp = await resMp.json();
-                        if (dataMp.status === 'APPROVED') { clearInterval(intervaloFisico); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-sucesso'); setTimeout(() => window.location.reload(), 4000); return; } 
-                        else if (dataMp.status === 'REJECTED') { clearInterval(intervaloFisico); exibirAlerta("Operação Cancelada", "O pagamento foi cancelado na maquininha."); return; }
-                        let res = await fetch('/api/status_geral?t=' + new Date().getTime()); let statusCache = await res.json(); let st = statusCache[id] || "DISPONIVEL"; 
-                        if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { clearInterval(intervaloFisico); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-sucesso'); setTimeout(() => window.location.reload(), 4000); } 
-                    } catch(e) { } 
-                }, 2500); 
-            }
-
-            function iniciarRadarPix(id) { 
-                intervaloPix = setInterval(async () => { 
-                    try { 
-                        let res = await fetch('/api/status_geral?t=' + new Date().getTime()); let statusCache = await res.json(); let st = statusCache[id] || "DISPONIVEL"; 
-                        if (st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("TEMPO:") || st.includes("OCUPADA")) { clearInterval(intervaloPix); if(timerInatividade) clearTimeout(timerInatividade); mostrarTela('tela-sucesso'); setTimeout(() => window.location.reload(), 4000); } 
-                    } catch(e) {} 
-                }, 2500); 
-            }
+            let maqAlvo = ''; function irPasso2(tipo) { document.getElementById('passo1').className='passo'; document.getElementById('passo2').className='passo ativo'; document.getElementById('listaL').style.display = tipo==='lavar'?'grid':'none'; document.getElementById('listaS').style.display = tipo==='secar'?'grid':'none'; }
+            function selecionarMaquina(id, num) { maqAlvo = id; document.getElementById('passo2').className='passo'; document.getElementById('passo3').className='passo ativo'; }
+            function chamarStone() { document.getElementById('passo3').className='passo'; document.getElementById('passo4').className='passo ativo'; setTimeout(()=>{ fetch('/criar_pagamento',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id_maquina:maqAlvo})}); setTimeout(()=>window.location.reload(), 3000); }, 2000); }
         </script>
     </body></html>`);
 });
 
-// ==========================================
-// 📱 API PARA O APLICATIVO NATIVO (ANDROID)
-// ==========================================
-app.get('/api/maquinas/:donoUrl', (req, res) => {
-    const donoRequisitado = req.params.donoUrl.toLowerCase();
-    
-    let maquinasDaLoja = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono.toLowerCase() === donoRequisitado);
-
-    let respostaJson = maquinasDaLoja.map(id => {
-        let statusReal = STATUS_CACHE[id] || "DISPONIVEL";
-        let isSecadora = id.toLowerCase().includes('sec');
-        let dadosAtuais = CACHE_DADOS_MAQUINAS[id] || { preco_lavar: "0", preco_secar: "0", tempo: "45" };
-        
-        return {
-            id: id,
-            tipo: isSecadora ? "SECAR" : "LAVAR",
-            preco: isSecadora ? dadosAtuais.preco_secar : dadosAtuais.preco_lavar,
-            tempo: dadosAtuais.tempo,
-            status: statusReal
-        };
-    });
-
-    res.json(respostaJson);
-});
-
-// ==========================================
-// 🔄 ROTINA DE AUTO-PING (MANTIDA PARA TESTES)
-// ==========================================
-app.get('/api/autoping', (req, res) => res.send('pong'));
-
-setInterval(async () => {
-    try {
-        await axios.get('https://lavanderia-server.onrender.com/api/autoping');
-        console.log('[AUTO-PING] Servidor chamado com sucesso para evitar a pausa de 15 minutos.');
-    } catch (e) {
-        console.log('[AUTO-PING] Erro ao tentar chamar a si mesmo.');
-    }
-}, 10 * 60 * 1000); 
+app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
+app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
