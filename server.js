@@ -384,8 +384,8 @@ app.post('/criar_pagamento', async (req, res) => {
             items: [{ title: `Ciclo ${dados.tempo}min - ${id_maquina}`, unit_price: parseFloat(dados.preco), quantity: 1, currency_id: 'BRL' }],
             metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, payer: { email: `cliente_${Date.now()}@lavanderia.com` },
             payment_methods: { excluded_payment_types: [{ id: "ticket" }, { id: "atm" }], installments: 1 },
-            notification_url: "https://lavanderia-v2.onrender.com/webhook", auto_return: "approved",
-            back_urls: { success: "https://lavanderia-v2.onrender.com/sucesso", failure: "https://lavanderia-v2.onrender.com/erro" }
+            notification_url: "https://servidor-TESTE-lavanderias/webhook", auto_return: "approved",
+            back_urls: { success: "https://servidor-TESTE-lavanderias/sucesso", failure: "https://servidor-TESTE-lavanderias/erro" }
         };
         const response = await axios.post('https://api.mercadopago.com/checkout/preferences', preference, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
         res.json({ status: 'ok', init_point: response.data.init_point });
@@ -401,7 +401,7 @@ app.post('/api/gerar_pix', async (req, res) => {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
 
-        const paymentData = { transaction_amount: parseFloat(dados.preco), description: `Unileve - ${id_maquina}`, payment_method_id: "pix", payer: { email: `c_${Date.now()}@mail.com` }, metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, notification_url: "https://lavanderia-v2.onrender.com/webhook" };
+        const paymentData = { transaction_amount: parseFloat(dados.preco), description: `Unileve - ${id_maquina}`, payment_method_id: "pix", payer: { email: `c_${Date.now()}@mail.com` }, metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, notification_url: "https://servidor-TESTE-lavanderias/webhook" };
         const response = await axios.post('https://api.mercadopago.com/v1/payments', paymentData, { headers: { 'Authorization': `Bearer ${config.token_mp}`, 'X-Idempotency-Key': `${id_maquina}-${Date.now()}` } });
         res.json({ success: true, qr_code_base64: response.data.point_of_interaction.transaction_data.qr_code_base64, qr_code: response.data.point_of_interaction.transaction_data.qr_code });
     } catch (e) { res.status(500).json({ error: "Erro Pix" }); }
