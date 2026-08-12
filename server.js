@@ -142,15 +142,18 @@ function executarDisparo(idMaquina, parametro) {
     if (!idMaquina.toLowerCase().includes('sec')) {
         // LAVADORAS: Comando antigo direto, à prova de falhas.
         mqttClient.publish(`lavanderia/${idMaquina}/comandos`, 'CMD_45', { qos: 1 });
+   } else {
+    // SECADORAS
+    const ehFoz = idMaquina.toLowerCase().includes('foziguacu');
+    if (ehFoz) {
+        // Foz do Iguaçu: placa antiga só aceita CMD_SECAR
+        console.log(`[${idMaquina}] Secadora Foz detectada. Enviando CMD_SECAR direto.`);
+        mqttClient.publish(`lavanderia/${idMaquina}/comandos`, 'CMD_SECAR', { qos: 1 });
     } else {
-        // SECADORAS: Tenta o comando novo
+        // Demais lojas: fluxo atual (SECAR:{tempo} + fallback 12s)
         mqttClient.publish(`lavanderia/${idMaquina}/comandos`, `SECAR:${tempoLimpo}`, { qos: 1 });
-        
-        // Damos 12 segundos (Tempo necessário para o Crash e Reboot da placa velha)
         setTimeout(() => {
             let st = STATUS_CACHE[idMaquina] || "DISPONIVEL";
-            
-            // Se a máquina não estiver fisicamente confirmada como ocupada...
             if (!st.includes("TEMPO:") && !st.includes("SECANDO") && !st.includes("OCUPADA") && !st.includes("LAVANDO")) {
                 console.log(`⚠️ [CRASH/PLACA ANTIGA DETETADA EM ${idMaquina}] Disparando CMD_SECAR`);
                 mqttClient.publish(`lavanderia/${idMaquina}/comandos`, 'CMD_SECAR', { qos: 1 });
