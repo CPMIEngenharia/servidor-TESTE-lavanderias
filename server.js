@@ -133,34 +133,29 @@ mqttClient.on('message', (topic, message) => {
 // O MOTOR CENTRALIZADO (O VERDADEIRO CÉREBRO)
 // ==========================================
 function executarDisparo(idMaquina, parametro) {
-    // ❌ Falsificação de status REMOVIDA. 
-    // A tela do cliente agora só vai dizer "Aprovado" quando a máquina ligar de verdade!
-    
     let tempoLimpo = String(parametro).replace(/[^0-9]/g, '');
-    if (!tempoLimpo || tempoLimpo === "0") tempoLimpo = "45"; 
-
+    if (!tempoLimpo || tempoLimpo === "0") tempoLimpo = "45";
     if (!idMaquina.toLowerCase().includes('sec')) {
-        // LAVADORAS: Comando antigo direto, à prova de falhas.
+        // LAVADORAS
         mqttClient.publish(`lavanderia/${idMaquina}/comandos`, 'CMD_45', { qos: 1 });
-   } else {
-    // SECADORAS
-    const ehFoz = idMaquina.toLowerCase().includes('foziguacu');
-    if (ehFoz) {
-        // Foz do Iguaçu: placa antiga só aceita CMD_SECAR
-        console.log(`[${idMaquina}] Secadora Foz detectada. Enviando CMD_SECAR direto.`);
-        mqttClient.publish(`lavanderia/${idMaquina}/comandos`, 'CMD_SECAR', { qos: 1 });
     } else {
-        // Demais lojas: fluxo atual (SECAR:{tempo} + fallback 12s)
-        mqttClient.publish(`lavanderia/${idMaquina}/comandos`, `SECAR:${tempoLimpo}`, { qos: 1 });
-        setTimeout(() => {
-            let st = STATUS_CACHE[idMaquina] || "DISPONIVEL";
-            if (!st.includes("TEMPO:") && !st.includes("SECANDO") && !st.includes("OCUPADA") && !st.includes("LAVANDO")) {
-                console.log(`⚠️ [CRASH/PLACA ANTIGA DETETADA EM ${idMaquina}] Disparando CMD_SECAR`);
-                mqttClient.publish(`lavanderia/${idMaquina}/comandos`, 'CMD_SECAR', { qos: 1 });
-            } else {
-                console.log(`✅ [${idMaquina}] Comando inteligente aceite com sucesso!`);
-            }
-        }, 12000);
+        // SECADORAS
+        const ehFoz = idMaquina.toLowerCase().includes('foziguacu');
+        if (ehFoz) {
+            console.log(`[${idMaquina}] Secadora Foz detectada. Enviando CMD_SECAR direto.`);
+            mqttClient.publish(`lavanderia/${idMaquina}/comandos`, 'CMD_SECAR', { qos: 1 });
+        } else {
+            mqttClient.publish(`lavanderia/${idMaquina}/comandos`, `SECAR:${tempoLimpo}`, { qos: 1 });
+            setTimeout(() => {
+                let st = STATUS_CACHE[idMaquina] || "DISPONIVEL";
+                if (!st.includes("TEMPO:") && !st.includes("SECANDO") && !st.includes("OCUPADA") && !st.includes("LAVANDO")) {
+                    console.log(`⚠️ [CRASH/PLACA ANTIGA DETETADA EM ${idMaquina}] Disparando CMD_SECAR`);
+                    mqttClient.publish(`lavanderia/${idMaquina}/comandos`, 'CMD_SECAR', { qos: 1 });
+                } else {
+                    console.log(`✅ [${idMaquina}] Comando inteligente aceite com sucesso!`);
+                }
+            }, 12000);
+        }
     }
 }
 // --- ROTAS DO PAINEL E PLANILHA ---
