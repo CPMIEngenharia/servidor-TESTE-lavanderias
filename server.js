@@ -8,18 +8,21 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
 // --- O GUARDA DE TRÂNSITO ---
 app.get('/', (req, res, next) => {
     if (req.query.id) return res.redirect('/app/' + req.query.id);
     next();
 });
 app.use(express.static('public'));
+
 // --- 1. CONFIGURAÇÕES ---
 const MASTER_SHEET_ID = "19427ddGD6PLr38I_hELCd6OhA89UycUyTNt-h7Exb8I";
 let CLIENTES = {};
 let STATUS_CACHE = {};
 let INTENTS_ATIVOS = {};
 let CACHE_DADOS_MAQUINAS = {};
+
 // --- 2. AUTENTICAÇÃO GOOGLE (ESCRITA) ---
 function getGoogleAuth() {
     return new google.auth.GoogleAuth({
@@ -30,6 +33,7 @@ function getGoogleAuth() {
         scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
 }
+
 // --- 3. CARREGAR CONFIGURAÇÕES MESTRE ---
 async function carregarConfiguracoes() {
     try {
@@ -54,6 +58,7 @@ async function carregarConfiguracoes() {
         }
     } catch (err) { console.error("❌ Erro Planilha Mestre:", err.message); }
 }
+
 // --- 4. CACHE DE PREÇOS E PROMOÇÕES ---
 async function sincronizarPrecosPlanilhas() {
     const sheetsUnicas = [...new Set(Object.values(CLIENTES).map(c => c.sheet_id).filter(id => id))];
@@ -92,12 +97,14 @@ carregarConfiguracoes();
 setInterval(carregarConfiguracoes, 600000);
 setTimeout(sincronizarPrecosPlanilhas, 5000);
 setInterval(sincronizarPrecosPlanilhas, 120000);
+
 async function buscarDadosNaPlanilha(sheetId, idMaquina, colunaPreco) {
     let dados = CACHE_DADOS_MAQUINAS[idMaquina];
     if (!dados) return { preco: "0", tempo: "45" };
     let precoCerto = colunaPreco.includes('sec') ? dados.preco_secar : dados.preco_lavar;
     return { preco: precoCerto, tempo: dados.tempo };
 }
+
 async function autenticarUsuarioNaPlanilha(usuario, senha) {
     try {
         const auth = getGoogleAuth();
@@ -113,6 +120,7 @@ async function autenticarUsuarioNaPlanilha(usuario, senha) {
         return linhaUsuario ? linhaUsuario[colDono].trim() : null;
     } catch (err) { return null; }
 }
+
 // --- 5. MQTT ---
 const mqttClient = mqtt.connect('mqtts://89c0f9913b464fe793a20c71d78ec5c6.s1.eu.hivemq.cloud:8883', { username: 'unileve', password: 'Unilevepassword1', rejectUnauthorized: false });
 mqttClient.on('connect', () => { mqttClient.subscribe('lavanderia/+/status'); });
@@ -120,22 +128,25 @@ mqttClient.on('message', (topic, message) => {
     const partes = topic.split('/');
     if (partes.length === 3 && partes[2] === 'status') STATUS_CACHE[partes[1]] = message.toString();
 });
-// --- 6. O CÉREBRO DE DESPACHO BLINDADO ---
+
+// --- 6. O CÉREBRO DE DESPACHO (COM FALLBACK SEGURO PARA O NANO) ---
 function executarDisparo(idMaquina, parametro) {
     let idLimpo = String(idMaquina).trim();
     let tempoLimpo = String(parametro).replace(/[^0-9]/g, '');
     if (!tempoLimpo || tempoLimpo === "0") tempoLimpo = "45";
+
     if (!idLimpo.toLowerCase().includes('sec')) {
         // LAVADORA: comando universal
         mqttClient.publish(`lavanderia/${idLimpo}/comandos`, 'CMD_45', { qos: 1 });
     } else {
         // SECADORA: tenta comando novo com tempo
         mqttClient.publish(`lavanderia/${idLimpo}/comandos`, `SECAR:${tempoLimpo}`, { qos: 1 });
-        // Fallback em 12s: se a placa antiga não respondeu, dispara CMD_SECAR e CMD_45
+        
+        // Fallback em 12s: se a placa não respondeu, dispara a inteligência do Arduino Nano
         setTimeout(() => {
             let st = STATUS_CACHE[idLimpo] || "DISPONIVEL";
             if (!st.includes("TEMPO:") && !st.includes("SECANDO") && !st.includes("OCUPADA") && !st.includes("LAVANDO")) {
-                console.log(`⚠️ [PLACA ANTIGA EM ${idLimpo}] Disparando Fallbacks`);
+                console.log(`⚠️ [PLACA ANTIGA EM ${idLimpo}] Disparando Fallbacks de 60min`);
                 mqttClient.publish(`lavanderia/${idLimpo}/comandos`, 'CMD_SECAR', { qos: 1 });
                 mqttClient.publish(`lavanderia/${idLimpo}/comandos`, 'CMD_45', { qos: 1 });
             } else {
@@ -144,6 +155,7 @@ function executarDisparo(idMaquina, parametro) {
         }, 12000);
     }
 }
+
 // --- 7. PAINEL DO DONO ---
 app.get('/painel', (req, res) => {
     const donoLogado = req.cookies.dono;
@@ -227,6 +239,7 @@ app.get('/painel', (req, res) => {
         </script>
     </body></html>`);
 });
+
 // --- 8. ATUALIZAR PLANILHA ---
 function getColLetter(colIndex) {
     let letter = ''; while (colIndex >= 0) { letter = String.fromCharCode((colIndex % 26) + 65) + letter; colIndex = Math.floor(colIndex / 26) - 1; } return letter;
@@ -258,6 +271,7 @@ app.post('/api/atualizar_planilha', async (req, res) => {
         res.json({ success: true });
     } catch(e) { res.status(500).json({ error: "Erro Planilha" }); }
 });
+
 // --- 9. STATUS / LOGIN / LOGOUT ---
 app.get('/api/status_geral', (req, res) => { res.json(STATUS_CACHE); });
 app.post('/login', async (req, res) => {
@@ -269,6 +283,7 @@ app.get('/logout', (req, res) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); res.setHeader('Pragma', 'no-cache'); res.setHeader('Expires', '0');
     res.send(`<script>window.location.href = '/painel';</script>`);
 });
+
 // --- 10. ACIONAR (USA O CÉREBRO PARA SECAR) ---
 app.post('/api/acionar', (req, res) => {
     const dono = req.cookies.dono; const { id, cmd } = req.body;
@@ -281,6 +296,7 @@ app.post('/api/acionar', (req, res) => {
     }
     res.json({ success: true });
 });
+
 // --- 11. TELA DO CLIENTE (DO ADESIVO) ---
 app.get('/app/:id', async (req, res) => {
     const id = req.params.id;
@@ -328,11 +344,17 @@ app.get('/app/:id', async (req, res) => {
         </script>
     </body></html>`);
 });
+
 // --- 12. PAGAMENTO ONLINE (CHECKOUT) ---
 app.post('/criar_pagamento', async (req, res) => {
     let { id_maquina, tempo } = req.body;
+    id_maquina = id_maquina ? String(id_maquina).trim() : id_maquina;
+    
+    // TRAVA ANTI-REINICIALIZAÇÃO FANTASMA
+    if (Object.keys(CLIENTES).length === 0) { await carregarConfiguracoes(); }
+    
     if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
-    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Máquina não configurada" });
+    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Servidor reiniciando ou máquina não configurada. Tente novamente." });
     if (STATUS_CACHE[id_maquina] && STATUS_CACHE[id_maquina].includes('TEMPO:')) return res.status(400).json({ error: "MÁQUINA EM USO." });
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
@@ -348,11 +370,17 @@ app.post('/criar_pagamento', async (req, res) => {
         res.json({ status: 'ok', init_point: response.data.init_point });
     } catch (e) { res.status(500).json({ error: "Erro MP" }); }
 });
+
 // --- 13. PIX DIRETO ---
 app.post('/api/gerar_pix', async (req, res) => {
     let { id_maquina, tempo } = req.body;
+    id_maquina = id_maquina ? String(id_maquina).trim() : id_maquina;
+    
+    // TRAVA ANTI-REINICIALIZAÇÃO FANTASMA
+    if (Object.keys(CLIENTES).length === 0) { await carregarConfiguracoes(); }
+    
     if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
-    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Erro" });
+    const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Erro. Tente novamente." });
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
@@ -361,19 +389,21 @@ app.post('/api/gerar_pix', async (req, res) => {
         res.json({ success: true, qr_code_base64: response.data.point_of_interaction.transaction_data.qr_code_base64, qr_code: response.data.point_of_interaction.transaction_data.qr_code });
     } catch (e) { res.status(500).json({ error: "Erro Pix" }); }
 });
-// --- 14. WEBHOOK BLINDADO ---
+
+// --- 14. WEBHOOK (CORRIGIDO PARA QUALQUER RESPOSTA DO MP) ---
 app.post('/webhook', async (req, res) => {
-    let tipoEvento = req.query.type || req.body.type || req.body.action || req.query.topic;
     const info = req.body;
-    
-    if (tipoEvento === 'point_integration_wh' || (info && info.state === 'FINISHED' && info.payment)) {
-        if (info.state === 'FINISHED' && info.payment && info.payment.state && String(info.payment.state).toLowerCase() === 'approved' && info.additional_info && info.additional_info.external_reference) {
+    let tipoEvento = req.query.type || (info && info.type) || (info && info.action) || req.query.topic;
+
+    // Validação estrutural à prova de falhas da Maquininha Física
+    if (tipoEvento === 'point_integration_wh' || (info && info.state && String(info.state).toUpperCase() === 'FINISHED' && info.payment)) {
+        if (info.payment && info.payment.state && String(info.payment.state).toUpperCase() === 'APPROVED' && info.additional_info && info.additional_info.external_reference) {
             const partes = info.additional_info.external_reference.split('|');
-            if (partes[0] && partes[1]) executarDisparo(partes[0].trim(), partes[1]);
+            if (partes[0] && partes[1]) executarDisparo(partes[0], partes[1]);
         }
         return res.sendStatus(200);
     }
-    
+
     if (tipoEvento === 'payment' || tipoEvento === 'payment.created') {
         const idPagamento = (req.body.data && req.body.data.id) ? req.body.data.id : req.query['data.id'];
         if (idPagamento) {
@@ -389,7 +419,7 @@ app.post('/webhook', async (req, res) => {
                         } else if (response.data.external_reference && response.data.external_reference.includes('|')) {
                             const partes = response.data.external_reference.split('|'); maquina = partes[0]; tempo = partes[1];
                         }
-                        if (maquina) { executarDisparo(maquina.trim(), tempo); return res.sendStatus(200); }
+                        if (maquina) { executarDisparo(maquina, tempo); return res.sendStatus(200); }
                     }
                 } catch (err) {}
             }
@@ -397,10 +427,17 @@ app.post('/webhook', async (req, res) => {
     }
     res.sendStatus(200);
 });
+
 // --- 15. MAQUININHA FÍSICA ---
 app.post('/api/pagar_fisico', async (req, res) => {
-    let { id_maquina, tempo } = req.body; const config = CLIENTES[id_maquina];
-    if (!config || !config.device_id) return res.status(400).json({ error: "Máquina não configurada." });
+    let { id_maquina, tempo } = req.body; 
+    id_maquina = id_maquina ? String(id_maquina).trim() : id_maquina;
+    
+    // TRAVA ANTI-REINICIALIZAÇÃO FANTASMA
+    if (Object.keys(CLIENTES).length === 0) { await carregarConfiguracoes(); }
+    
+    const config = CLIENTES[id_maquina];
+    if (!config || !config.device_id) return res.status(400).json({ error: "Servidor reiniciando ou máquina não configurada. Tente novamente." });
     if (INTENTS_ATIVOS[id_maquina]) { try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${INTENTS_ATIVOS[id_maquina]}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); } catch(e) {} delete INTENTS_ATIVOS[id_maquina]; }
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
@@ -410,17 +447,20 @@ app.post('/api/pagar_fisico', async (req, res) => {
         INTENTS_ATIVOS[id_maquina] = response.data.id; res.json({ success: true, intent_id: response.data.id });
     } catch (error) { res.status(500).json({ error: "Erro na maquininha." }); }
 });
+
 app.post('/api/cancelar_fisico', async (req, res) => {
     const { id_maquina } = req.body; const config = CLIENTES[id_maquina]; const intentId = INTENTS_ATIVOS[id_maquina];
     if (!config || !intentId) return res.json({ success: false });
     try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); delete INTENTS_ATIVOS[id_maquina]; } catch (e) {}
     res.json({ success: true });
 });
+
 app.get('/limpar-fila/:id_maquina', async (req, res) => {
     const id = req.params.id_maquina; const config = CLIENTES[id];
     if (!config || !config.device_id) return res.send("Máquina sem DEVICE_ID");
     try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); res.send("<h2 style='color:green;'>✅ Fila limpa!</h2>"); } catch (error) { res.send("<p>" + error.message + "</p>"); }
 });
+
 // --- 16. TOTEM (AUTOATENDIMENTO TABLET) ---
 app.get('/totem/:donoUrl', (req, res) => {
     const donoRequisitado = req.params.donoUrl.toLowerCase();
@@ -538,7 +578,7 @@ app.get('/totem/:donoUrl', (req, res) => {
             <div style="font-size:80px;">⚠️</div>
             <h2 style="font-size:45px; color:#ff7675; margin-top:20px;">Maquininha Ocupada!</h2>
             <div style="background: rgba(231, 76, 60, 0.15); border: 2px solid #e74c3c; border-radius: 10px; padding: 30px; max-width: 700px; margin-top: 30px; text-align: center;">
-                <p style="font-size:28px; color:#ffffff; margin:0; line-height:1.5;">O cliente anterior não terminou o pagamento.<br><br>Aperte a <b>Seta de Voltar ( < )</b> ou o <b>Botão Vermelho ( X )</b> na própria maquininha para destravar!</p>
+                <p style="font-size:28px; color:#ffffff; margin:0; line-height:1.5;">O cliente anterior não terminou o pagamento.<br><br>Aperte a <b>Seta de Voltar ( &lt; )</b> ou o <b>Botão Vermelho ( X )</b> na própria maquininha para destravar!</p>
             </div>
             <button class="btn-acao btn-nao" style="margin-top:50px; font-size:24px; padding: 20px 40px;" onclick="cancelarTudo()">ENTENDI, VOLTAR</button>
         </div>
@@ -652,8 +692,10 @@ app.get('/totem/:donoUrl', (req, res) => {
     </html>
     `);
 });
+
 // --- 17. RETORNO MP ---
 app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
 app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
+
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
