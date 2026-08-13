@@ -350,7 +350,6 @@ app.post('/criar_pagamento', async (req, res) => {
     let { id_maquina, tempo } = req.body;
     id_maquina = id_maquina ? String(id_maquina).trim() : id_maquina;
     
-    // TRAVA ANTI-REINICIALIZAÇÃO FANTASMA
     if (Object.keys(CLIENTES).length === 0) { await carregarConfiguracoes(); }
     
     if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
@@ -376,7 +375,6 @@ app.post('/api/gerar_pix', async (req, res) => {
     let { id_maquina, tempo } = req.body;
     id_maquina = id_maquina ? String(id_maquina).trim() : id_maquina;
     
-    // TRAVA ANTI-REINICIALIZAÇÃO FANTASMA
     if (Object.keys(CLIENTES).length === 0) { await carregarConfiguracoes(); }
     
     if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
@@ -395,7 +393,6 @@ app.post('/webhook', async (req, res) => {
     const info = req.body;
     let tipoEvento = req.query.type || (info && info.type) || (info && info.action) || req.query.topic;
 
-    // Validação estrutural à prova de falhas da Maquininha Física
     if (tipoEvento === 'point_integration_wh' || (info && info.state && String(info.state).toUpperCase() === 'FINISHED' && info.payment)) {
         if (info.payment && info.payment.state && String(info.payment.state).toUpperCase() === 'APPROVED' && info.additional_info && info.additional_info.external_reference) {
             const partes = info.additional_info.external_reference.split('|');
@@ -433,7 +430,6 @@ app.post('/api/pagar_fisico', async (req, res) => {
     let { id_maquina, tempo } = req.body; 
     id_maquina = id_maquina ? String(id_maquina).trim() : id_maquina;
     
-    // TRAVA ANTI-REINICIALIZAÇÃO FANTASMA
     if (Object.keys(CLIENTES).length === 0) { await carregarConfiguracoes(); }
     
     const config = CLIENTES[id_maquina];
@@ -461,7 +457,7 @@ app.get('/limpar-fila/:id_maquina', async (req, res) => {
     try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); res.send("<h2 style='color:green;'>✅ Fila limpa!</h2>"); } catch (error) { res.send("<p>" + error.message + "</p>"); }
 });
 
-// --- 16. TOTEM (AUTOATENDIMENTO TABLET) ---
+// --- 16. TOTEM COMPACTO PARA TABLET ---
 app.get('/totem/:donoUrl', (req, res) => {
     const donoRequisitado = req.params.donoUrl.toLowerCase();
     let maquinasDaLoja = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono.toLowerCase() === donoRequisitado);
@@ -484,16 +480,16 @@ app.get('/totem/:donoUrl', (req, res) => {
         let isOcupada = st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("ENXAGUE") || st.includes("CENTRIF") || st.includes("OCUPADA");
         if (isOcupada) {
             return `<div id="${idOriginal}" class="botao-maq ocupada" onclick="alert('Esta máquina já está lavando roupas de outro cliente!')">
-                <div style="font-size:50px;">${icone}</div>
-                <h2 style="margin:10px 0;">${nomeAmigavel}</h2>
-                <div id="badge-${idOriginal}" style="background:rgba(0,0,0,0.2); border-radius:8px; padding:10px; font-weight:bold;">EM USO ⏳</div>
+                <div style="font-size:35px;">${icone}</div>
+                <h2 style="margin:5px 0; font-size:14px;">${nomeAmigavel}</h2>
+                <div id="badge-${idOriginal}" style="background:rgba(0,0,0,0.2); border-radius:6px; padding:5px; font-size:10px; font-weight:bold;">EM USO ⏳</div>
             </div>`;
         } else {
             let classe = isSecadora ? 'secadora-livre' : 'lavadora-livre';
             return `<div id="${idOriginal}" class="botao-maq ${classe}" onclick="abrirConfirmacao('${nomeAmigavel}', '${idOriginal}')">
-                <div style="font-size:50px;">${icone}</div>
-                <h2 style="margin:10px 0;">${nomeAmigavel}</h2>
-                <div id="badge-${idOriginal}" style="background:rgba(0,0,0,0.2); border-radius:8px; padding:10px; font-weight:bold;">TOCAR PARA PAGAR</div>
+                <div style="font-size:35px;">${icone}</div>
+                <h2 style="margin:5px 0; font-size:14px;">${nomeAmigavel}</h2>
+                <div id="badge-${idOriginal}" style="background:rgba(0,0,0,0.2); border-radius:6px; padding:5px; font-size:10px; font-weight:bold;">TOCAR PARA PAGAR</div>
             </div>`;
         }
     }
@@ -513,22 +509,22 @@ app.get('/totem/:donoUrl', (req, res) => {
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
         <title>Unileve - Autoatendimento</title>
         <style>
-            body { font-family: sans-serif; background: #ecf0f1; margin: 0; padding: 30px; user-select: none; }
-            h1 { text-align: center; color: #2c3e50; font-size: 36px; margin-bottom: 5px; }
-            p.subtitulo { text-align: center; color: #7f8c8d; font-size: 20px; margin-bottom: 40px; }
-            .loja-container { display: flex; justify-content: center; gap: 40px; flex-wrap: wrap; max-width: 1200px; margin: 0 auto; }
-            .torre { display: flex; flex-direction: column; gap: 20px; width: 300px; background: #dfe6e9; padding: 20px; border-radius: 20px; box-shadow: inset 0 4px 8px rgba(0,0,0,0.05); }
-            .titulo-torre { text-align: center; color: #34495e; margin: 0 0 10px 0; font-size: 24px; font-weight: bold; }
-            .botao-maq { border-radius:15px; padding:30px 20px; color:white; text-align:center; cursor:pointer; box-shadow: 0 6px 12px rgba(0,0,0,0.15); transition: transform 0.1s; }
+            body { font-family: sans-serif; background: #ecf0f1; margin: 0; padding: 10px; user-select: none; overflow-x: hidden; }
+            h1 { text-align: center; color: #2c3e50; font-size: 22px; margin-bottom: 2px; margin-top: 5px; }
+            p.subtitulo { text-align: center; color: #7f8c8d; font-size: 14px; margin-bottom: 15px; margin-top: 0; }
+            .loja-container { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; max-width: 100%; margin: 0 auto; }
+            .torre { display: flex; flex-direction: column; gap: 10px; width: 140px; background: #dfe6e9; padding: 10px; border-radius: 12px; box-shadow: inset 0 4px 8px rgba(0,0,0,0.05); }
+            .titulo-torre { text-align: center; color: #34495e; margin: 0 0 5px 0; font-size: 14px; font-weight: bold; }
+            .botao-maq { border-radius:10px; padding:10px; color:white; text-align:center; cursor:pointer; box-shadow: 0 4px 8px rgba(0,0,0,0.15); transition: transform 0.1s; }
             .botao-maq:active { transform: scale(0.97); }
             .secadora-livre { background: #e67e22; }
             .lavadora-livre { background: #2980b9; }
             .ocupada { background: #95a5a6; opacity: 0.6; cursor: not-allowed; }
             .overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 1000; color: white; text-align: center; justify-content: center; align-items: center; flex-direction: column; }
-            .btn-acao { padding: 20px 40px; font-size: 22px; font-weight: bold; color: white; border: none; border-radius: 10px; cursor: pointer; margin: 10px; }
+            .btn-acao { padding: 15px 30px; font-size: 18px; font-weight: bold; color: white; border: none; border-radius: 8px; cursor: pointer; margin: 10px; }
             .btn-sim { background: #2ecc71; }
             .btn-nao { background: #e74c3c; }
-            .btn-escolha { padding: 30px; font-size: 26px; border-radius: 15px; width: 100%; max-width: 500px; margin: 10px 0; border: none; color: white; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 15px; }
+            .btn-escolha { padding: 20px; font-size: 20px; border-radius: 12px; width: 100%; max-width: 400px; margin: 10px 0; border: none; color: white; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 15px; }
             .btn-cartao { background: #e67e22; }
             .btn-cartao:active { background: #d35400; }
             .btn-pix { background: #27ae60; }
@@ -540,47 +536,47 @@ app.get('/totem/:donoUrl', (req, res) => {
         <p class="subtitulo">Toque na máquina que você deseja usar:</p>
         <div class="loja-container">${htmlTorres}</div>
         <div id="telaConfirmacao" class="overlay">
-            <div style="font-size:80px; margin-bottom: 20px;">👕</div>
-            <h2 style="font-size:40px; color:#f1c40f; margin:0 0 20px 0;">ATENÇÃO</h2>
-            <p style="font-size:30px; max-width:800px; line-height:1.4;">Você já colocou as roupas na <b id="maqConfirmacao">MÁQUINA</b> e fechou a porta?</p>
-            <p style="font-size:20px; color:#e74c3c; background: rgba(231, 76, 60, 0.2); padding: 15px; border-radius: 10px; margin-bottom: 40px;">⚠️ Após o pagamento aprovado, a máquina iniciará automaticamente.</p>
-            <div style="display: flex; gap: 20px;">
+            <div style="font-size:60px; margin-bottom: 15px;">👕</div>
+            <h2 style="font-size:28px; color:#f1c40f; margin:0 0 15px 0;">ATENÇÃO</h2>
+            <p style="font-size:20px; max-width:600px; line-height:1.4;">Você já colocou as roupas na <b id="maqConfirmacao">MÁQUINA</b> e fechou a porta?</p>
+            <p style="font-size:14px; color:#e74c3c; background: rgba(231, 76, 60, 0.2); padding: 10px; border-radius: 8px; margin-bottom: 30px;">⚠️ Após o pagamento aprovado, a máquina iniciará automaticamente.</p>
+            <div style="display: flex; gap: 15px;">
                 <button class="btn-acao btn-nao" onclick="cancelarTudo()">NÃO, VOU COLOCAR</button>
                 <button class="btn-acao btn-sim" onclick="irParaEscolha()">SIM, JÁ COLOQUEI</button>
             </div>
         </div>
         <div id="telaEscolha" class="overlay">
-            <h2 style="font-size:45px; margin-bottom: 40px; color:#fff;">Como deseja pagar?</h2>
-            <button class="btn-escolha btn-cartao" onclick="pagarComCartao()"><span style="font-size: 40px;">💳</span> <span>CARTÃO<br><span style="font-size:16px; font-weight:normal;">Na maquininha ao lado</span></span></button>
-            <button class="btn-escolha btn-pix" onclick="pagarComPixTotem()"><span style="font-size: 40px;">🟢</span> <span>PIX<br><span style="font-size:16px; font-weight:normal;">Ler QR Code nesta tela</span></span></button>
-            <button class="btn-acao btn-nao" style="margin-top:40px; background: transparent; border: 2px solid #e74c3c;" onclick="cancelarTudo()">CANCELAR</button>
+            <h2 style="font-size:32px; margin-bottom: 30px; color:#fff;">Como deseja pagar?</h2>
+            <button class="btn-escolha btn-cartao" onclick="pagarComCartao()"><span style="font-size: 35px;">💳</span> <span>CARTÃO<br><span style="font-size:14px; font-weight:normal;">Na maquininha ao lado</span></span></button>
+            <button class="btn-escolha btn-pix" onclick="pagarComPixTotem()"><span style="font-size: 35px;">🟢</span> <span>PIX<br><span style="font-size:14px; font-weight:normal;">Ler QR Code nesta tela</span></span></button>
+            <button class="btn-acao btn-nao" style="margin-top:30px; background: transparent; border: 2px solid #e74c3c;" onclick="cancelarTudo()">CANCELAR</button>
         </div>
         <div id="telaPagamento" class="overlay">
-            <div style="font-size:100px;">💳</div>
-            <h2 style="font-size:40px; margin-top:20px;">Vá até a maquininha ao lado!</h2>
-            <p style="font-size:24px; color:#bdc3c7; margin-top:10px;">Aproxime ou insira seu cartão para liberar a <br><b id="maqAlvoCartao" style="color:#2ecc71; font-size:32px; display:inline-block; margin-top:10px;">MÁQUINA</b>.</p>
-            <button class="btn-acao btn-nao" style="margin-top:50px;" onclick="cancelarTudo()">CANCELAR COMPRA</button>
+            <div style="font-size:80px;">💳</div>
+            <h2 style="font-size:32px; margin-top:15px;">Vá até a maquininha ao lado!</h2>
+            <p style="font-size:20px; color:#bdc3c7; margin-top:10px;">Aproxime ou insira seu cartão para liberar a <br><b id="maqAlvoCartao" style="color:#2ecc71; font-size:28px; display:inline-block; margin-top:10px;">MÁQUINA</b>.</p>
+            <button class="btn-acao btn-nao" style="margin-top:40px;" onclick="cancelarTudo()">CANCELAR COMPRA</button>
         </div>
         <div id="telaPixTotem" class="overlay">
-            <h2 style="font-size:45px; margin-top:20px; color:#2ecc71;">Pague com PIX</h2>
-            <p style="font-size:24px; color:#bdc3c7; margin-top:10px;">Abra o app do seu banco e escaneie o código abaixo:</p>
-            <div id="loadingPix" style="font-size:24px; margin: 40px 0; color:#f1c40f;">⏳ Gerando código PIX...</div>
-            <img id="imgPixTotem" src="" style="display:none; width:350px; height:350px; border: 10px solid #fff; border-radius:15px; margin: 20px 0; background:white;">
-            <p style="font-size:20px; color:#f1c40f; margin-top: 10px;">A máquina iniciará automaticamente após o pagamento.</p>
-            <button class="btn-acao btn-nao" style="margin-top:40px; background: transparent; border: 2px solid #e74c3c;" onclick="cancelarTudo()">CANCELAR COMPRA</button>
+            <h2 style="font-size:32px; margin-top:15px; color:#2ecc71;">Pague com PIX</h2>
+            <p style="font-size:20px; color:#bdc3c7; margin-top:10px;">Abra o app do seu banco e escaneie o código abaixo:</p>
+            <div id="loadingPix" style="font-size:20px; margin: 30px 0; color:#f1c40f;">⏳ Gerando código PIX...</div>
+            <img id="imgPixTotem" src="" style="display:none; width:280px; height:280px; border: 8px solid #fff; border-radius:12px; margin: 15px 0; background:white;">
+            <p style="font-size:16px; color:#f1c40f; margin-top: 10px;">A máquina iniciará automaticamente após o pagamento.</p>
+            <button class="btn-acao btn-nao" style="margin-top:30px; background: transparent; border: 2px solid #e74c3c;" onclick="cancelarTudo()">CANCELAR COMPRA</button>
         </div>
         <div id="telaSucesso" class="overlay" style="background: rgba(39, 174, 96, 0.95);">
-            <div style="font-size:120px; animation: pop 0.5s;">✅</div>
-            <h2 style="font-size:50px; margin-top:20px; color:#fff;">PAGAMENTO APROVADO!</h2>
-            <p style="font-size:28px; color:#fff; margin-top:10px;">Sua máquina já foi iniciada.</p>
+            <div style="font-size:100px; animation: pop 0.5s;">✅</div>
+            <h2 style="font-size:40px; margin-top:15px; color:#fff;">PAGAMENTO APROVADO!</h2>
+            <p style="font-size:22px; color:#fff; margin-top:10px;">Sua máquina já foi iniciada.</p>
         </div>
         <div id="telaErro" class="overlay">
-            <div style="font-size:80px;">⚠️</div>
-            <h2 style="font-size:45px; color:#ff7675; margin-top:20px;">Maquininha Ocupada!</h2>
-            <div style="background: rgba(231, 76, 60, 0.15); border: 2px solid #e74c3c; border-radius: 10px; padding: 30px; max-width: 700px; margin-top: 30px; text-align: center;">
-                <p style="font-size:28px; color:#ffffff; margin:0; line-height:1.5;">O cliente anterior não terminou o pagamento.<br><br>Aperte a <b>Seta de Voltar ( &lt; )</b> ou o <b>Botão Vermelho ( X )</b> na própria maquininha para destravar!</p>
+            <div style="font-size:60px;">⚠️</div>
+            <h2 style="font-size:32px; color:#ff7675; margin-top:15px;">Maquininha Ocupada!</h2>
+            <div style="background: rgba(231, 76, 60, 0.15); border: 2px solid #e74c3c; border-radius: 8px; padding: 20px; max-width: 500px; margin-top: 20px; text-align: center;">
+                <p style="font-size:20px; color:#ffffff; margin:0; line-height:1.4;">O cliente anterior não terminou o pagamento.<br><br>Aperte a <b>Seta de Voltar ( < )</b> ou o <b>Botão Vermelho ( X )</b> na própria maquininha para destravar!</p>
             </div>
-            <button class="btn-acao btn-nao" style="margin-top:50px; font-size:24px; padding: 20px 40px;" onclick="cancelarTudo()">ENTENDI, VOLTAR</button>
+            <button class="btn-acao btn-nao" style="margin-top:40px; font-size:20px; padding: 15px 30px;" onclick="cancelarTudo()">ENTENDI, VOLTAR</button>
         </div>
      <script>
             let idOriginalAlvo = "";
