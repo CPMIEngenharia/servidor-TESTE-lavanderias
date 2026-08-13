@@ -381,7 +381,7 @@ app.post('/api/gerar_pix', async (req, res) => {
     } catch (e) { res.status(500).json({ error: "Erro Pix" }); }
 });
 
-// --- 14. WEBHOOK (CORRIGIDO PARA QUALQUER RESPOSTA DO MP) ---
+// --- 14. WEBHOOK ---
 app.post('/webhook', async (req, res) => {
     const info = req.body;
     let tipoEvento = req.query.type || (info && info.type) || (info && info.action) || req.query.topic;
@@ -472,9 +472,9 @@ app.get('/totem/:donoUrl', (req, res) => {
         let textoBadge = isOcupada ? "EM USO ⏳" : "TOCAR PARA PAGAR";
 
         return `<div id="${idOriginal}" class="botao-maq ${cssClasse}" onclick="${evento}">
-            <div style="font-size:35px;">${icone}</div>
-            <h2 style="margin:5px 0; font-size:14px;">${nomeAmigavel}</h2>
-            <div id="badge-${idOriginal}" style="background:rgba(0,0,0,0.2); border-radius:6px; padding:6px; font-size:10px; font-weight:bold;">${textoBadge}</div>
+            <div style="font-size:50px;">${icone}</div>
+            <h2 style="margin:8px 0; font-size:20px;">${nomeAmigavel}</h2>
+            <div id="badge-${idOriginal}" style="background:rgba(0,0,0,0.2); border-radius:6px; padding:8px; font-size:14px; font-weight:bold;">${textoBadge}</div>
         </div>`;
     }
 
@@ -491,13 +491,13 @@ app.get('/totem/:donoUrl', (req, res) => {
         <title>Unileve - Autoatendimento</title>
         <style>
             body { font-family: sans-serif; background: #ecf0f1; margin: 0; padding: 10px; user-select: none; overflow-x: hidden; }
-            h1 { text-align: center; color: #2c3e50; font-size: 20px; margin-bottom: 2px; margin-top: 5px; }
-            p.subtitulo { text-align: center; color: #7f8c8d; font-size: 14px; margin-bottom: 15px; margin-top: 0; }
+            h1 { text-align: center; color: #2c3e50; font-size: 26px; margin-bottom: 2px; margin-top: 5px; }
+            p.subtitulo { text-align: center; color: #7f8c8d; font-size: 16px; margin-bottom: 15px; margin-top: 0; }
             
-            .loja-container { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; width: 100%; max-width: 1000px; margin: 0 auto; }
-            .linha-maquinas { display: flex; flex-direction: row; justify-content: center; gap: 10px; width: 100%; flex-wrap: nowrap; }
+            .loja-container { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 15px; width: 100%; max-width: 1000px; margin: 0 auto; }
+            .linha-maquinas { display: flex; flex-direction: row; justify-content: center; gap: 15px; width: 100%; flex-wrap: wrap; }
             
-            .botao-maq { border-radius:10px; padding:10px; color:white; text-align:center; cursor:pointer; box-shadow: 0 4px 8px rgba(0,0,0,0.15); transition: transform 0.1s; flex: 1; max-width: 140px; min-width: 100px; }
+            .botao-maq { border-radius:12px; padding:15px; color:white; text-align:center; cursor:pointer; box-shadow: 0 4px 8px rgba(0,0,0,0.15); transition: transform 0.1s; flex: 1; max-width: 210px; min-width: 150px; }
             .botao-maq:active { transform: scale(0.97); }
             .secadora-livre { background: #e67e22; }
             .lavadora-livre { background: #2980b9; }
