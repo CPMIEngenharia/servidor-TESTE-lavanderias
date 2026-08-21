@@ -761,3 +761,7 @@ app.get('/mp-callback', async (req, res) => {
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
+// Mantém o servidor acordado (ping a cada 10 min)
+setInterval(() => {
+    axios.get('https://lavanderia-server.onrender.com/').catch(() => {});
+}, 10 * 60 * 1000);
