@@ -690,6 +690,74 @@ app.get('/totem/:donoUrl', (req, res) => {
 // --- 17. RETORNO MP ---
 app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
 app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
+// --- 18. OAUTH MP — CONECTAR CONTA DO DONO ---
+app.get('/mp-callback', async (req, res) => {
+    const { code, state } = req.query;
+    if (!code) return res.status(400).send('Código ausente. Tente novamente.');
+
+    try {
+        // Troca o code por access_token + refresh_token
+        const params = new URLSearchParams({
+            grant_type: 'authorization_code',
+            client_id: process.env.MP_CLIENT_ID || '',
+            client_secret: process.env.MP_CLIENT_SECRET || '',
+            code,
+            redirect_uri: 'https://lavanderia-server.onrender.com/mp-callback',
+        });
+        const { data } = await axios.post('https://api.mercadopago.com/oauth/token', params, {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        });
+
+        // Identifica o dono (via state) ou usa o primeiro da planilha
+        const dono = state || (Object.values(CLIENTES)[0] ? Object.values(CLIENTES)[0].dono : null);
+        if (!dono) return res.status(400).send('Não foi possível identificar o dono.');
+
+        // Atualiza o token_mp (coluna C) e o refresh_token (coluna J) na planilha
+        const auth = getGoogleAuth();
+        const sheets = google.sheets({ version: 'v4', auth });
+        const response = await sheets.spreadsheets.values.get({
+            spreadsheetId: MASTER_SHEET_ID,
+            range: 'CONFIG_GERAL!A:B',
+        });
+        const linhas = response.data.values;
+        if (linhas && linhas.length > 1) {
+            for (let i = 1; i < linhas.length; i++) {
+                if (linhas[i][1] && linhas[i][1].trim() === dono) {
+                    const rowNumber = i + 1;
+                    await sheets.spreadsheets.values.update({
+                        spreadsheetId: MASTER_SHEET_ID,
+                        range: `CONFIG_GERAL!C${rowNumber}`,
+                        valueInputOption: 'USER_ENTERED',
+                        requestBody: { values: [[data.access_token]] },
+                    });
+                    await sheets.spreadsheets.values.update({
+                        spreadsheetId: MASTER_SHEET_ID,
+                        range: `CONFIG_GERAL!J${rowNumber}`,
+                        valueInputOption: 'USER_ENTERED',
+                        requestBody: { values: [[data.refresh_token]] },
+                    });
+                }
+            }
+        }
+
+        // Atualiza o cache em memória
+        for (const id in CLIENTES) {
+            if (CLIENTES[id].dono === dono) {
+                CLIENTES[id].token_mp = data.access_token;
+            }
+        }
+        TOKENS_MP[dono] = {
+            access: data.access_token,
+            refresh: data.refresh_token,
+            expiresAt: Date.now() + (data.expires_in || 21600) * 1000,
+        };
+
+        res.send('<h2 style="font-family:sans-serif;text-align:center;margin-top:50px;color:#27ae60;">✅ Conta Mercado Pago conectada com sucesso! Já pode fechar esta página.</h2>');
+    } catch (e) {
+        console.error('❌ Erro no mp-callback:', e.response?.data || e.message);
+        res.status(500).send('Erro ao conectar a conta MP. Verifique as credenciais.');
+    }
+});
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
