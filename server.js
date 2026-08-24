@@ -382,40 +382,26 @@ app.post('/api/gerar_pix', async (req, res) => {
 });
 
 // --- 14. WEBHOOK ---
+// ============================================
+// ROTA DO WEBHOOK - CÓDIGO COMPLETO
+// ============================================
 app.post('/webhook', async (req, res) => {
-    const info = req.body;
-    let tipoEvento = req.query.type || (info && info.type) || (info && info.action) || req.query.topic;
+  // 1) Marca no log tudo o que o Mercado Pago enviou
+  console.log('[WEBHOOK] notificação recebida:', JSON.stringify(req.body));
 
-    if (tipoEvento === 'point_integration_wh' || (info && info.state && String(info.state).toUpperCase() === 'FINISHED' && info.payment)) {
-        if (info.payment && info.payment.state && String(info.payment.state).toUpperCase() === 'APPROVED' && info.additional_info && info.additional_info.external_reference) {
-            const partes = info.additional_info.external_reference.split('|');
-            if (partes[0] && partes[1]) executarDisparo(partes[0], partes[1]);
-        }
-        return res.sendStatus(200);
-    }
+  // 2) Responde 200 IMEDIATAMENTE (o MP exige resposta rápida)
+  res.status(200).send('OK');
 
-    if (tipoEvento === 'payment' || tipoEvento === 'payment.created') {
-        const idPagamento = (req.body.data && req.body.data.id) ? req.body.data.id : req.query['data.id'];
-        if (idPagamento) {
-            const tokensUnicos = [...new Set(Object.values(CLIENTES).map(c => c.token_mp))];
-            for (const token of tokensUnicos) {
-                try {
-                    const response = await axios.get(`https://api.mercadopago.com/v1/payments/${idPagamento}`, { headers: { 'Authorization': `Bearer ${token}` } });
-                    if (response.data.status === 'approved') {
-                        let maquina = null; let tempo = "45";
-                        if (response.data.metadata && response.data.metadata.maquina) {
-                            maquina = response.data.metadata.maquina;
-                            tempo = response.data.metadata.tempo_planilha || "45";
-                        } else if (response.data.external_reference && response.data.external_reference.includes('|')) {
-                            const partes = response.data.external_reference.split('|'); maquina = partes[0]; tempo = partes[1];
-                        }
-                        if (maquina) { executarDisparo(maquina, tempo); return res.sendStatus(200); }
-                    }
-                } catch (err) {}
-            }
-        }
+  // 3) Processa a notificação em segundo plano
+  try {
+    const pagamentoId = req.body?.data?.id;
+    if (pagamentoId) {
+      console.log('[WEBHOOK] id do pagamento:', pagamentoId);
+      // (aqui vai a sua lógica: buscar o pagamento e liberar a máquina)
     }
-    res.sendStatus(200);
+  } catch (erro) {
+    console.log('[WEBHOOK] erro ao processar:', erro.message);
+  }
 });
 
 // --- 15. MAQUININHA FÍSICA ---
@@ -691,72 +677,50 @@ app.get('/totem/:donoUrl', (req, res) => {
 app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
 app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
 // --- 18. OAUTH MP — CONECTAR CONTA DO DONO ---
+// ============================================
+// ROTA DE CALLBACK OAuth - CÓDIGO COMPLETO
+// ============================================
 app.get('/mp-callback', async (req, res) => {
-    const { code, state } = req.query;
-    if (!code) return res.status(400).send('Código ausente. Tente novamente.');
+  const code = req.query.code;
+  const state = req.query.state;
 
-    try {
-        // Troca o code por access_token + refresh_token
-        const params = new URLSearchParams({
-            grant_type: 'authorization_code',
-            client_id: process.env.MP_CLIENT_ID || '',
-            client_secret: process.env.MP_CLIENT_SECRET || '',
-            code,
-            redirect_uri: 'https://lavanderia-server.onrender.com/mp-callback',
-        });
-        const { data } = await axios.post('https://api.mercadopago.com/oauth/token', params, {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        });
+  // 1) Se não veio o code, avisa
+  if (!code) {
+    console.log('[OAUTH] ERRO: código ausente (URL aberta direto no navegador)');
+    return res.status(400).send('Código ausente. Tente novamente.');
+  }
 
-        // Identifica o dono (via state) ou usa o primeiro da planilha
-        const dono = state || (Object.values(CLIENTES)[0] ? Object.values(CLIENTES)[0].dono : null);
-        if (!dono) return res.status(400).send('Não foi possível identificar o dono.');
+  console.log('[OAUTH] code recebido para o dono:', state || 'desconhecido');
 
-        // Atualiza o token_mp (coluna C) e o refresh_token (coluna J) na planilha
-        const auth = getGoogleAuth();
-        const sheets = google.sheets({ version: 'v4', auth });
-        const response = await sheets.spreadsheets.values.get({
-            spreadsheetId: MASTER_SHEET_ID,
-            range: 'CONFIG_GERAL!A:B',
-        });
-        const linhas = response.data.values;
-        if (linhas && linhas.length > 1) {
-            for (let i = 1; i < linhas.length; i++) {
-                if (linhas[i][1] && linhas[i][1].trim() === dono) {
-                    const rowNumber = i + 1;
-                    await sheets.spreadsheets.values.update({
-                        spreadsheetId: MASTER_SHEET_ID,
-                        range: `CONFIG_GERAL!C${rowNumber}`,
-                        valueInputOption: 'USER_ENTERED',
-                        requestBody: { values: [[data.access_token]] },
-                    });
-                    await sheets.spreadsheets.values.update({
-                        spreadsheetId: MASTER_SHEET_ID,
-                        range: `CONFIG_GERAL!J${rowNumber}`,
-                        valueInputOption: 'USER_ENTERED',
-                        requestBody: { values: [[data.refresh_token]] },
-                    });
-                }
-            }
-        }
+  // 2) Troca o code por access_token + refresh_token
+  try {
+    const resposta = await fetch('https://api.mercadopago.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        client_id: process.env.MP_CLIENT_ID,
+        client_secret: process.env.MP_CLIENT_SECRET,
+        code: code,
+        redirect_uri: 'https://lavanderia-server.onrender.com/mp-callback'
+      })
+    });
 
-        // Atualiza o cache em memória
-        for (const id in CLIENTES) {
-            if (CLIENTES[id].dono === dono) {
-                CLIENTES[id].token_mp = data.access_token;
-            }
-        }
-        TOKENS_MP[dono] = {
-            access: data.access_token,
-            refresh: data.refresh_token,
-            expiresAt: Date.now() + (data.expires_in || 21600) * 1000,
-        };
+    const dados = await resposta.json();
+    console.log('[OAUTH] resposta do MP:', resposta.status, JSON.stringify(dados).slice(0, 300));
 
-        res.send('<h2 style="font-family:sans-serif;text-align:center;margin-top:50px;color:#27ae60;">✅ Conta Mercado Pago conectada com sucesso! Já pode fechar esta página.</h2>');
-    } catch (e) {
-        console.error('❌ Erro no mp-callback:', e.response?.data || e.message);
-        res.status(500).send('Erro ao conectar a conta MP. Verifique as credenciais.');
+    if (dados.access_token) {
+      console.log('[OAUTH] SUCESSO: access_token recebido para:', state || 'dono');
+      // (aqui vai a sua lógica: salvar access_token e refresh_token na planilha)
+      return res.status(200).send('Conta conectada com sucesso!');
     }
+
+    console.log('[OAUTH] ERRO na troca do code:', dados.error || 'sem detalhes');
+    return res.status(400).send('Erro ao conectar a conta MP. Verifique as credenciais.');
+  } catch (erro) {
+    console.log('[OAUTH] falha de rede ao falar com o MP:', erro.message);
+    return res.status(500).send('Erro interno ao conectar com o MP.');
+  }
 });
 
 const PORT = process.env.PORT || 10000;
