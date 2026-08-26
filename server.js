@@ -17,13 +17,14 @@ app.use(express.static('public'));
 // --- 1. CONFIGURAÇÕES ---
 const MASTER_SHEET_ID = "19427ddGD6PLr38I_hELCd6OhA89UycUyTNt-h7Exb8I";
 // [ALTERADO] URLs centralizadas: cada ambiente notifica a si mesmo via variável de ambiente.
-// No Render, configure BASE_URL = https://lavanderia-server.onrender.com (teste) ou https://lavanderia-v2.onrender.com (produção).
 const BASE_URL = process.env.BASE_URL || "https://lavanderia-v2.onrender.com";
 const WEBHOOK_URL = process.env.WEBHOOK_URL || `${BASE_URL}/webhook`;
 let CLIENTES = {};
 let STATUS_CACHE = {};
 let INTENTS_ATIVOS = {};
 let CACHE_DADOS_MAQUINAS = {};
+// [ALTERADO] Registro de rechecagens ativas (evita duplicar timers para o mesmo pagamento)
+const RECHECAGENS = {};
 // --- 2. AUTENTICAÇÃO GOOGLE (ESCRITA) ---
 function getGoogleAuth() {
     return new google.auth.GoogleAuth({
@@ -144,6 +145,54 @@ function executarDisparo(idMaquina, parametro) {
             }
         }, 12000);
     }
+}
+// [ALTERADO] Extrai máquina|tempo de QUALQUER campo do payload (movida para escopo global p/ uso no webhook e na rechecagem)
+function extrairMaquinaTempo(objeto) {
+    const ref =
+        (objeto && objeto.external_reference) ||
+        (objeto && objeto.additional_info && objeto.additional_info.external_reference) ||
+        (objeto && objeto.payment && objeto.payment.external_reference) ||
+        (objeto && objeto.payment && objeto.payment.additional_info && objeto.payment.additional_info.external_reference);
+    if (ref && String(ref).includes('|')) {
+        const partes = String(ref).split('|');
+        if (partes[0] && partes[1]) return { maquina: partes[0], tempo: partes[1] };
+    }
+    return null;
+}
+// [ALTERADO] RECHECAGEM: plano B p/ notificação de approved que se perdeu. Consulta a API a cada 30s (até 6x) e dispara ao aprovar.
+function agendarRechecagem(idPagamento, token) {
+    if (RECHECAGENS[idPagamento]) return;
+    let tentativas = 0;
+    RECHECAGENS[idPagamento] = setInterval(async () => {
+        tentativas++;
+        if (tentativas > 6) {
+            clearInterval(RECHECAGENS[idPagamento]);
+            delete RECHECAGENS[idPagamento];
+            console.log('[WEBHOOK] rechecagem encerrada para', idPagamento, '(ainda nao aprovado)');
+            return;
+        }
+        try {
+            const r = await axios.get(`https://api.mercadopago.com/v1/payments/${idPagamento}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (r.data.status === 'approved') {
+                clearInterval(RECHECAGENS[idPagamento]);
+                delete RECHECAGENS[idPagamento];
+                let alvo = null;
+                if (r.data.metadata && r.data.metadata.maquina) {
+                    alvo = { maquina: r.data.metadata.maquina, tempo: r.data.metadata.tempo_planilha || "45" };
+                } else {
+                    alvo = extrairMaquinaTempo(r.data);
+                }
+                if (alvo) {
+                    console.log('[WEBHOOK] PIX aprovado (rechecagem) -> disparando:', alvo.maquina, 'tempo:', alvo.tempo);
+                    executarDisparo(alvo.maquina, alvo.tempo);
+                }
+            } else {
+                console.log('[WEBHOOK] rechecagem', idPagamento, '-> status:', r.data.status);
+            }
+        } catch (e) {}
+    }, 30000);
 }
 // --- 7. PAINEL DO DONO ---
 app.get('/painel', (req, res) => {
@@ -360,7 +409,9 @@ app.post('/api/gerar_pix', async (req, res) => {
     if (Object.keys(CLIENTES).length === 0) { await carregarConfiguracoes(); }
     if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
     const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Erro. Tente novamente." });
-    if (STATUS_CACHE[id_maquina] && STATUS_CACHE[id_maquina].includes('TEMPO:')) return res.status(400).json({ error: "MÁQUINA EM USO." });
+    // [ALTERADO] BLOQUEIO DE MÁQUINA EM USO (mesma regra do /criar_pagamento, ampliada p/ todos os estados ocupados)
+    const stAtual = STATUS_CACHE[id_maquina] || "";
+    if (["LAVANDO", "SECANDO", "ENXAGUE", "CENTRIF", "OCUPADA", "TEMPO:"].some(x => stAtual.includes(x))) return res.status(400).json({ error: "MÁQUINA EM USO." });
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
@@ -385,19 +436,6 @@ app.post('/webhook', async (req, res) => {
     console.log('[WEBHOOK] payload recebido:', JSON.stringify(info));
     let tipoEvento = req.query.type || (info && info.type) || (info && info.action) || req.query.topic;
     console.log('[WEBHOOK] tipo de evento:', tipoEvento);
-    // Acha a máquina|tempo em QUALQUER lugar do payload
-    function extrairMaquinaTempo(objeto) {
-        const ref =
-            (objeto && objeto.external_reference) ||
-            (objeto && objeto.additional_info && objeto.additional_info.external_reference) ||
-            (objeto && objeto.payment && objeto.payment.external_reference) ||
-            (objeto && objeto.payment && objeto.payment.additional_info && objeto.payment.additional_info.external_reference);
-        if (ref && String(ref).includes('|')) {
-            const partes = String(ref).split('|');
-            if (partes[0] && partes[1]) return { maquina: partes[0], tempo: partes[1] };
-        }
-        return null;
-    }
     // ---- EVENTO DA MAQUININHA (Point) ----
     if (tipoEvento === 'point_integration_wh' || (info && info.state && String(info.state).toUpperCase() === 'FINISHED' && info.payment)) {
         const estadoIntent = (info.payment && info.payment.state) ? String(info.payment.state).toUpperCase() : '';
@@ -443,6 +481,10 @@ app.post('/webhook', async (req, res) => {
                         }
                         // [ALTERADO] Log de diagnóstico: pagamento aprovado mas sem máquina identificável
                         console.log('[WEBHOOK] pagamento', idPagamento, 'aprovado mas SEM maquina identificavel (sem metadata.maquina nem external_reference)');
+                    } else if (response.data.status === 'pending') {
+                        // [ALTERADO] RECHECAGEM: agenda consultas automáticas até o pagamento aprovar (plano B p/ notificação perdida)
+                        console.log('[WEBHOOK] pagamento', idPagamento, 'PENDENTE - agendando rechecagem');
+                        agendarRechecagem(idPagamento, token);
                     }
                 } catch (err) {
                     console.log('[WEBHOOK] erro ao consultar pagamento', idPagamento, ':', err.message);
@@ -484,7 +526,6 @@ app.get('/totem/:donoUrl', (req, res) => {
     const donoRequisitado = req.params.donoUrl.toLowerCase();
     let maquinasDaLoja = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono.toLowerCase() === donoRequisitado);
     if (maquinasDaLoja.length === 0) return res.send("<h1 style='text-align:center; font-family:sans-serif; margin-top:50px; color:#2c3e50;'>Nenhuma máquina encontrada para esta loja.</h1>");
-    // Separa e ordena as máquinas por tipo
     let secadoras = maquinasDaLoja.filter(id => id.toLowerCase().includes('sec')).sort((a,b) => a.localeCompare(b));
     let lavadoras = maquinasDaLoja.filter(id => !id.toLowerCase().includes('sec')).sort((a,b) => a.localeCompare(b));
     function gerarBotao(idOriginal, isSecadora) {
