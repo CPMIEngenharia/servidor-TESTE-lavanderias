@@ -16,15 +16,15 @@ app.get('/', (req, res, next) => {
 app.use(express.static('public'));
 // --- 1. CONFIGURAÇÕES ---
 const MASTER_SHEET_ID = "19427ddGD6PLr38I_hELCd6OhA89UycUyTNt-h7Exb8I";
-// [ALTERADO] URLs centralizadas: cada ambiente notifica a si mesmo via variável de ambiente.
 const BASE_URL = process.env.BASE_URL || "https://lavanderia-v2.onrender.com";
 const WEBHOOK_URL = process.env.WEBHOOK_URL || `${BASE_URL}/webhook`;
 let CLIENTES = {};
 let STATUS_CACHE = {};
 let INTENTS_ATIVOS = {};
 let CACHE_DADOS_MAQUINAS = {};
-// [ALTERADO] Registro de rechecagens ativas (evita duplicar timers para o mesmo pagamento)
 const RECHECAGENS = {};
+// [ALTERADO] GUARDA ANTI-DUPLO DISPARO: registra os IDs de pagamento já disparados
+const DISPAROS_REALIZADOS = {};
 // --- 2. AUTENTICAÇÃO GOOGLE (ESCRITA) ---
 function getGoogleAuth() {
     return new google.auth.GoogleAuth({
@@ -146,7 +146,22 @@ function executarDisparo(idMaquina, parametro) {
         }, 12000);
     }
 }
-// [ALTERADO] Extrai máquina|tempo de QUALQUER campo do payload (escopo global p/ webhook e rechecagem)
+// [ALTERADO] GUARDA ANTI-DUPLO DISPARO: cada pagamento dispara a máquina apenas 1x (trava por ID do pagamento)
+function dispararUmaVez(idRef, maquina, tempo) {
+    if (!idRef) { executarDisparo(maquina, tempo); return; }
+    const agora = Date.now();
+    for (const k in DISPAROS_REALIZADOS) {
+        if (agora - DISPAROS_REALIZADOS[k] > 6 * 60 * 60 * 1000) delete DISPAROS_REALIZADOS[k];
+    }
+    if (DISPAROS_REALIZADOS[idRef]) {
+        console.log('[WEBHOOK] DISPARO DUPLICADO BLOQUEADO para ref', idRef);
+        return;
+    }
+    DISPAROS_REALIZADOS[idRef] = agora;
+    console.log('[WEBHOOK] DISPARANDO:', maquina, 'tempo:', tempo, '| ref:', idRef);
+    executarDisparo(maquina, tempo);
+}
+// Extrai máquina|tempo de QUALQUER campo do payload (escopo global p/ webhook e rechecagem)
 function extrairMaquinaTempo(objeto) {
     const ref =
         (objeto && objeto.external_reference) ||
@@ -159,7 +174,7 @@ function extrairMaquinaTempo(objeto) {
     }
     return null;
 }
-// [ALTERADO] RECHECAGEM: plano B p/ notificação de approved que se perdeu. Consulta a API a cada 30s (até 6x) e dispara ao aprovar.
+// RECHECAGEM: plano B p/ notificação de approved que se perdeu. Consulta a API a cada 30s (até 6x) e dispara ao aprovar.
 function agendarRechecagem(idPagamento, token) {
     if (RECHECAGENS[idPagamento]) return;
     let tentativas = 0;
@@ -185,8 +200,8 @@ function agendarRechecagem(idPagamento, token) {
                     alvo = extrairMaquinaTempo(r.data);
                 }
                 if (alvo) {
-                    console.log('[WEBHOOK] PIX aprovado (rechecagem) -> disparando:', alvo.maquina, 'tempo:', alvo.tempo);
-                    executarDisparo(alvo.maquina, alvo.tempo);
+                    // [ALTERADO] usa o guarda anti-duplo (ID do pagamento)
+                    dispararUmaVez(idPagamento, alvo.maquina, alvo.tempo);
                 }
             } else {
                 console.log('[WEBHOOK] rechecagem', idPagamento, '-> status:', r.data.status);
@@ -358,7 +373,6 @@ app.get('/app/:id', async (req, res) => {
         function gerarPix(id, tempo){
             document.getElementById('areaBotoes').innerHTML = "<p>⏳ Gerando PIX...</p>";
             fetch('/api/gerar_pix', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id_maquina: id, tempo: tempo}) }).then(r => r.json()).then(d => {
-                // [ALTERADO] Mostra a mensagem real do servidor (ex: MÁQUINA EM USO.) em vez de "Erro."
                 if (d.success) { document.getElementById('areaBotoes').style.display = 'none'; document.getElementById('areaPix').style.display = 'block'; document.getElementById('imgPix').src = "data:image/jpeg;base64," + d.qr_code_base64; document.getElementById('textoCopiaCola').value = d.qr_code; iniciarMonitoramento(id); } else { alert('Atenção: ' + (d.error || 'Erro.')); window.location.reload(); }
             }).catch(e => { window.location.reload(); });
         }
@@ -394,7 +408,6 @@ app.post('/criar_pagamento', async (req, res) => {
             items: [{ title: `Ciclo ${dados.tempo}min - ${id_maquina}`, unit_price: parseFloat(dados.preco), quantity: 1, currency_id: 'BRL' }],
             metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, payer: { email: `cliente_${Date.now()}@lavanderia.com` },
             payment_methods: { excluded_payment_types: [{ id: "ticket" }, { id: "atm" }], installments: 1 },
-            // [ALTERADO] URL de notificação e retornos agora usam as variáveis do ambiente
             notification_url: WEBHOOK_URL,
             auto_return: "approved",
             back_urls: { success: `${BASE_URL}/sucesso`, failure: `${BASE_URL}/erro` }
@@ -410,7 +423,6 @@ app.post('/api/gerar_pix', async (req, res) => {
     if (Object.keys(CLIENTES).length === 0) { await carregarConfiguracoes(); }
     if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
     const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Erro. Tente novamente." });
-    // [ALTERADO] BLOQUEIO DE MÁQUINA EM USO (mesma regra do /criar_pagamento, ampliada p/ todos os estados ocupados)
     const stAtual = STATUS_CACHE[id_maquina] || "";
     if (["LAVANDO", "SECANDO", "ENXAGUE", "CENTRIF", "OCUPADA", "TEMPO:"].some(x => stAtual.includes(x))) return res.status(400).json({ error: "MÁQUINA EM USO." });
     try {
@@ -422,9 +434,7 @@ app.post('/api/gerar_pix', async (req, res) => {
             payment_method_id: "pix",
             payer: { email: `c_${Date.now()}@mail.com` },
             metadata: { maquina: id_maquina, tempo_planilha: dados.tempo },
-            // [ALTERADO] external_reference adicionado: reforça a conciliação e dá ao webhook um segundo caminho para identificar a máquina
             external_reference: `${id_maquina}|${dados.tempo}`,
-            // [ALTERADO] URL de notificação agora usa a variável do ambiente (cada servidor notifica a si mesmo)
             notification_url: WEBHOOK_URL
         };
         const response = await axios.post('https://api.mercadopago.com/v1/payments', paymentData, { headers: { 'Authorization': `Bearer ${config.token_mp}`, 'X-Idempotency-Key': `${id_maquina}-${Date.now()}` } });
@@ -447,8 +457,9 @@ app.post('/webhook', async (req, res) => {
         if (estadoPagto === 'APPROVED') {
             const alvo = extrairMaquinaTempo(info);
             if (alvo) {
-                console.log('[WEBHOOK] APROVADO na maquininha -> disparando:', alvo.maquina, 'tempo:', alvo.tempo);
-                executarDisparo(alvo.maquina, alvo.tempo);
+                // [ALTERADO] usa o guarda anti-duplo (ID do payment-intent da maquininha)
+                const refMaq = (info.payment && info.payment.id) ? info.payment.id : (info.payment && info.payment.payment && info.payment.payment.id);
+                dispararUmaVez(refMaq, alvo.maquina, alvo.tempo);
             } else {
                 console.log('[WEBHOOK] APROVADO, mas SEM external_reference para identificar a máquina');
             }
@@ -476,14 +487,12 @@ app.post('/webhook', async (req, res) => {
                             alvo = extrairMaquinaTempo(response.data);
                         }
                         if (alvo) {
-                            console.log('[WEBHOOK] PIX/QR aprovado -> disparando:', alvo.maquina, 'tempo:', alvo.tempo);
-                            executarDisparo(alvo.maquina, alvo.tempo);
+                            // [ALTERADO] usa o guarda anti-duplo (ID do pagamento)
+                            dispararUmaVez(idPagamento, alvo.maquina, alvo.tempo);
                             return res.sendStatus(200);
                         }
-                        // [ALTERADO] Log de diagnóstico: pagamento aprovado mas sem máquina identificável
                         console.log('[WEBHOOK] pagamento', idPagamento, 'aprovado mas SEM maquina identificavel (sem metadata.maquina nem external_reference)');
                     } else if (response.data.status === 'pending') {
-                        // [ALTERADO] RECHECAGEM: agenda consultas automáticas até o pagamento aprovar (plano B p/ notificação perdida)
                         console.log('[WEBHOOK] pagamento', idPagamento, 'PENDENTE - agendando rechecagem');
                         agendarRechecagem(idPagamento, token);
                     }
