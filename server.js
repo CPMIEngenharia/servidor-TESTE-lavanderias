@@ -360,6 +360,7 @@ app.post('/api/gerar_pix', async (req, res) => {
     if (Object.keys(CLIENTES).length === 0) { await carregarConfiguracoes(); }
     if (tempo === '45' || tempo === 'CMD_45') tempo = 'preco_45'; if (String(tempo).toLowerCase().includes('sec')) tempo = 'preco_secar';
     const config = CLIENTES[id_maquina]; if (!config) return res.status(400).json({ error: "Erro. Tente novamente." });
+    if (STATUS_CACHE[id_maquina] && STATUS_CACHE[id_maquina].includes('TEMPO:')) return res.status(400).json({ error: "MÁQUINA EM USO." });
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
