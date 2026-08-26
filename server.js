@@ -146,7 +146,7 @@ function executarDisparo(idMaquina, parametro) {
         }, 12000);
     }
 }
-// [ALTERADO] Extrai máquina|tempo de QUALQUER campo do payload (movida para escopo global p/ uso no webhook e na rechecagem)
+// [ALTERADO] Extrai máquina|tempo de QUALQUER campo do payload (escopo global p/ webhook e rechecagem)
 function extrairMaquinaTempo(objeto) {
     const ref =
         (objeto && objeto.external_reference) ||
@@ -358,7 +358,8 @@ app.get('/app/:id', async (req, res) => {
         function gerarPix(id, tempo){
             document.getElementById('areaBotoes').innerHTML = "<p>⏳ Gerando PIX...</p>";
             fetch('/api/gerar_pix', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id_maquina: id, tempo: tempo}) }).then(r => r.json()).then(d => {
-                if (d.success) { document.getElementById('areaBotoes').style.display = 'none'; document.getElementById('areaPix').style.display = 'block'; document.getElementById('imgPix').src = "data:image/jpeg;base64," + d.qr_code_base64; document.getElementById('textoCopiaCola').value = d.qr_code; iniciarMonitoramento(id); } else { alert('Erro.'); window.location.reload(); }
+                // [ALTERADO] Mostra a mensagem real do servidor (ex: MÁQUINA EM USO.) em vez de "Erro."
+                if (d.success) { document.getElementById('areaBotoes').style.display = 'none'; document.getElementById('areaPix').style.display = 'block'; document.getElementById('imgPix').src = "data:image/jpeg;base64," + d.qr_code_base64; document.getElementById('textoCopiaCola').value = d.qr_code; iniciarMonitoramento(id); } else { alert('Atenção: ' + (d.error || 'Erro.')); window.location.reload(); }
             }).catch(e => { window.location.reload(); });
         }
         function pagarOnline(id, tempo){
