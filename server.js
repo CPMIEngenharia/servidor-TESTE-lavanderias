@@ -334,6 +334,30 @@ app.get('/logout', (req, res) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); res.setHeader('Pragma', 'no-cache'); res.setHeader('Expires', '0');
     res.send(`<script>window.location.href = '/painel';</script>`);
 });
+
+// --- ROTA JSON PARA O APP ANDROID (UnilevePOS_MP) ---
+app.get('/api/maquinas/:donoUrl', (req, res) => {
+    const donoRequisitado = String(req.params.donoUrl).toLowerCase();
+    const maquinas = Object.keys(CLIENTES)
+        .filter(id => CLIENTES[id].dono.toLowerCase() === donoRequisitado)
+        .map(id => {
+            const isSecadora = id.toLowerCase().includes('sec');
+            const dados = CACHE_DADOS_MAQUINAS[id] || {};
+            const status = STATUS_CACHE[id] || "DISPONIVEL";
+            const preco = isSecadora ? (dados.preco_secar || "0") : (dados.preco_lavar || "0");
+            const numMatch = id.match(/\d+$/);
+            const numero = numMatch ? numMatch[0] : id.toUpperCase();
+            return {
+                id: id,
+                nome: (isSecadora ? "SECADORA " : "LAVADORA ") + numero,
+                tipo: isSecadora ? "SECAR" : "LAVAR",
+                status: status,
+                preco: parseFloat(preco) || 0
+            };
+        });
+    res.json(maquinas);
+});
+
 // --- 10. ACIONAR (USA O CÉREBRO PARA SECAR) ---
 app.post('/api/acionar', (req, res) => {
     const dono = req.cookies.dono; const { id, cmd } = req.body;
