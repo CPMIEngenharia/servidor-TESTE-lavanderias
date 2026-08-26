@@ -1,5 +1,4 @@
 const express = require('express');
-const TOKENS_MP = {};
 const axios = require('axios');
 const mqtt = require('mqtt');
 const { google } = require('googleapis');
@@ -9,21 +8,22 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-
 // --- O GUARDA DE TRÂNSITO ---
 app.get('/', (req, res, next) => {
     if (req.query.id) return res.redirect('/app/' + req.query.id);
     next();
 });
 app.use(express.static('public'));
-
 // --- 1. CONFIGURAÇÕES ---
 const MASTER_SHEET_ID = "19427ddGD6PLr38I_hELCd6OhA89UycUyTNt-h7Exb8I";
+// [ALTERADO] URLs centralizadas: cada ambiente notifica a si mesmo via variável de ambiente.
+// No Render, configure BASE_URL = https://lavanderia-server.onrender.com (teste) ou https://lavanderia-v2.onrender.com (produção).
+const BASE_URL = process.env.BASE_URL || "https://lavanderia-v2.onrender.com";
+const WEBHOOK_URL = process.env.WEBHOOK_URL || `${BASE_URL}/webhook`;
 let CLIENTES = {};
 let STATUS_CACHE = {};
 let INTENTS_ATIVOS = {};
 let CACHE_DADOS_MAQUINAS = {};
-
 // --- 2. AUTENTICAÇÃO GOOGLE (ESCRITA) ---
 function getGoogleAuth() {
     return new google.auth.GoogleAuth({
@@ -34,7 +34,6 @@ function getGoogleAuth() {
         scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
 }
-
 // --- 3. CARREGAR CONFIGURAÇÕES MESTRE ---
 async function carregarConfiguracoes() {
     try {
@@ -59,7 +58,6 @@ async function carregarConfiguracoes() {
         }
     } catch (err) { console.error("❌ Erro Planilha Mestre:", err.message); }
 }
-
 // --- 4. CACHE DE PREÇOS E PROMOÇÕES ---
 async function sincronizarPrecosPlanilhas() {
     const sheetsUnicas = [...new Set(Object.values(CLIENTES).map(c => c.sheet_id).filter(id => id))];
@@ -98,14 +96,12 @@ carregarConfiguracoes();
 setInterval(carregarConfiguracoes, 600000);
 setTimeout(sincronizarPrecosPlanilhas, 5000);
 setInterval(sincronizarPrecosPlanilhas, 120000);
-
 async function buscarDadosNaPlanilha(sheetId, idMaquina, colunaPreco) {
     let dados = CACHE_DADOS_MAQUINAS[idMaquina];
     if (!dados) return { preco: "0", tempo: "45" };
     let precoCerto = colunaPreco.includes('sec') ? dados.preco_secar : dados.preco_lavar;
     return { preco: precoCerto, tempo: dados.tempo };
 }
-
 async function autenticarUsuarioNaPlanilha(usuario, senha) {
     try {
         const auth = getGoogleAuth();
@@ -121,7 +117,6 @@ async function autenticarUsuarioNaPlanilha(usuario, senha) {
         return linhaUsuario ? linhaUsuario[colDono].trim() : null;
     } catch (err) { return null; }
 }
-
 // --- 5. MQTT ---
 const mqttClient = mqtt.connect('mqtts://89c0f9913b464fe793a20c71d78ec5c6.s1.eu.hivemq.cloud:8883', { username: 'unileve', password: 'Unilevepassword1', rejectUnauthorized: false });
 mqttClient.on('connect', () => { mqttClient.subscribe('lavanderia/+/status'); });
@@ -129,18 +124,15 @@ mqttClient.on('message', (topic, message) => {
     const partes = topic.split('/');
     if (partes.length === 3 && partes[2] === 'status') STATUS_CACHE[partes[1]] = message.toString();
 });
-
 // --- 6. O CÉREBRO DE DESPACHO ---
 function executarDisparo(idMaquina, parametro) {
     let idLimpo = String(idMaquina).trim();
     let tempoLimpo = String(parametro).replace(/[^0-9]/g, '');
     if (!tempoLimpo || tempoLimpo === "0") tempoLimpo = "45";
-
     if (!idLimpo.toLowerCase().includes('sec')) {
         mqttClient.publish(`lavanderia/${idLimpo}/comandos`, 'CMD_45', { qos: 1 });
     } else {
         mqttClient.publish(`lavanderia/${idLimpo}/comandos`, `SECAR:${tempoLimpo}`, { qos: 1 });
-        
         setTimeout(() => {
             let st = STATUS_CACHE[idLimpo] || "DISPONIVEL";
             if (!st.includes("TEMPO:") && !st.includes("SECANDO") && !st.includes("OCUPADA") && !st.includes("LAVANDO")) {
@@ -153,7 +145,6 @@ function executarDisparo(idMaquina, parametro) {
         }, 12000);
     }
 }
-
 // --- 7. PAINEL DO DONO ---
 app.get('/painel', (req, res) => {
     const donoLogado = req.cookies.dono;
@@ -237,7 +228,6 @@ app.get('/painel', (req, res) => {
         </script>
     </body></html>`);
 });
-
 // --- 8. ATUALIZAR PLANILHA ---
 function getColLetter(colIndex) {
     let letter = ''; while (colIndex >= 0) { letter = String.fromCharCode((colIndex % 26) + 65) + letter; colIndex = Math.floor(colIndex / 26) - 1; } return letter;
@@ -269,7 +259,6 @@ app.post('/api/atualizar_planilha', async (req, res) => {
         res.json({ success: true });
     } catch(e) { res.status(500).json({ error: "Erro Planilha" }); }
 });
-
 // --- 9. STATUS / LOGIN / LOGOUT ---
 app.get('/api/status_geral', (req, res) => { res.json(STATUS_CACHE); });
 app.post('/login', async (req, res) => {
@@ -281,7 +270,6 @@ app.get('/logout', (req, res) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); res.setHeader('Pragma', 'no-cache'); res.setHeader('Expires', '0');
     res.send(`<script>window.location.href = '/painel';</script>`);
 });
-
 // --- 10. ACIONAR (USA O CÉREBRO PARA SECAR) ---
 app.post('/api/acionar', (req, res) => {
     const dono = req.cookies.dono; const { id, cmd } = req.body;
@@ -294,7 +282,6 @@ app.post('/api/acionar', (req, res) => {
     }
     res.json({ success: true });
 });
-
 // --- 11. TELA DO CLIENTE (DO ADESIVO) ---
 app.get('/app/:id', async (req, res) => {
     const id = req.params.id;
@@ -342,7 +329,6 @@ app.get('/app/:id', async (req, res) => {
         </script>
     </body></html>`);
 });
-
 // --- 12. PAGAMENTO ONLINE (CHECKOUT) ---
 app.post('/criar_pagamento', async (req, res) => {
     let { id_maquina, tempo } = req.body;
@@ -358,14 +344,15 @@ app.post('/criar_pagamento', async (req, res) => {
             items: [{ title: `Ciclo ${dados.tempo}min - ${id_maquina}`, unit_price: parseFloat(dados.preco), quantity: 1, currency_id: 'BRL' }],
             metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, payer: { email: `cliente_${Date.now()}@lavanderia.com` },
             payment_methods: { excluded_payment_types: [{ id: "ticket" }, { id: "atm" }], installments: 1 },
-            notification_url: "https://lavanderia-server.onrender.com/webhook", auto_return: "approved",
-            back_urls: { success: "https://lavanderia-server.onrender.com/sucesso", failure: "https://lavanderia-server.onrender.com/erro" }
+            // [ALTERADO] URL de notificação e retornos agora usam as variáveis do ambiente
+            notification_url: WEBHOOK_URL,
+            auto_return: "approved",
+            back_urls: { success: `${BASE_URL}/sucesso`, failure: `${BASE_URL}/erro` }
         };
         const response = await axios.post('https://api.mercadopago.com/checkout/preferences', preference, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
         res.json({ status: 'ok', init_point: response.data.init_point });
     } catch (e) { res.status(500).json({ error: "Erro MP" }); }
 });
-
 // --- 13. PIX DIRETO ---
 app.post('/api/gerar_pix', async (req, res) => {
     let { id_maquina, tempo } = req.body;
@@ -376,35 +363,94 @@ app.post('/api/gerar_pix', async (req, res) => {
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero" });
-        const paymentData = { transaction_amount: parseFloat(dados.preco), description: `Unileve - ${id_maquina}`, payment_method_id: "pix", payer: { email: `c_${Date.now()}@mail.com` }, metadata: { maquina: id_maquina, tempo_planilha: dados.tempo }, notification_url: "https://lavanderia-server.onrender.com/webhook" };
+        const paymentData = {
+            transaction_amount: parseFloat(dados.preco),
+            description: `Unileve - ${id_maquina}`,
+            payment_method_id: "pix",
+            payer: { email: `c_${Date.now()}@mail.com` },
+            metadata: { maquina: id_maquina, tempo_planilha: dados.tempo },
+            // [ALTERADO] external_reference adicionado: reforça a conciliação e dá ao webhook um segundo caminho para identificar a máquina
+            external_reference: `${id_maquina}|${dados.tempo}`,
+            // [ALTERADO] URL de notificação agora usa a variável do ambiente (cada servidor notifica a si mesmo)
+            notification_url: WEBHOOK_URL
+        };
         const response = await axios.post('https://api.mercadopago.com/v1/payments', paymentData, { headers: { 'Authorization': `Bearer ${config.token_mp}`, 'X-Idempotency-Key': `${id_maquina}-${Date.now()}` } });
         res.json({ success: true, qr_code_base64: response.data.point_of_interaction.transaction_data.qr_code_base64, qr_code: response.data.point_of_interaction.transaction_data.qr_code });
     } catch (e) { res.status(500).json({ error: "Erro Pix" }); }
 });
-
-// --- 14. WEBHOOK ---
-// ============================================
-// ROTA DO WEBHOOK - CÓDIGO COMPLETO
-// ============================================
+// --- 14. WEBHOOK (V2 - CORRIGIDO) ---
 app.post('/webhook', async (req, res) => {
-  // 1) Marca no log tudo o que o Mercado Pago enviou
-  console.log('[WEBHOOK] notificação recebida:', JSON.stringify(req.body));
-
-  // 2) Responde 200 IMEDIATAMENTE (o MP exige resposta rápida)
-  res.status(200).send('OK');
-
-  // 3) Processa a notificação em segundo plano
-  try {
-    const pagamentoId = req.body?.data?.id;
-    if (pagamentoId) {
-      console.log('[WEBHOOK] id do pagamento:', pagamentoId);
-      // (aqui vai a sua lógica: buscar o pagamento e liberar a máquina)
+    const info = req.body;
+    console.log('[WEBHOOK] payload recebido:', JSON.stringify(info));
+    let tipoEvento = req.query.type || (info && info.type) || (info && info.action) || req.query.topic;
+    console.log('[WEBHOOK] tipo de evento:', tipoEvento);
+    // Acha a máquina|tempo em QUALQUER lugar do payload
+    function extrairMaquinaTempo(objeto) {
+        const ref =
+            (objeto && objeto.external_reference) ||
+            (objeto && objeto.additional_info && objeto.additional_info.external_reference) ||
+            (objeto && objeto.payment && objeto.payment.external_reference) ||
+            (objeto && objeto.payment && objeto.payment.additional_info && objeto.payment.additional_info.external_reference);
+        if (ref && String(ref).includes('|')) {
+            const partes = String(ref).split('|');
+            if (partes[0] && partes[1]) return { maquina: partes[0], tempo: partes[1] };
+        }
+        return null;
     }
-  } catch (erro) {
-    console.log('[WEBHOOK] erro ao processar:', erro.message);
-  }
+    // ---- EVENTO DA MAQUININHA (Point) ----
+    if (tipoEvento === 'point_integration_wh' || (info && info.state && String(info.state).toUpperCase() === 'FINISHED' && info.payment)) {
+        const estadoIntent = (info.payment && info.payment.state) ? String(info.payment.state).toUpperCase() : '';
+        const estadoPagto = (info.payment && info.payment.payment && info.payment.payment.state)
+            ? String(info.payment.payment.state).toUpperCase()
+            : estadoIntent;
+        console.log('[WEBHOOK] maquininha -> intent:', estadoIntent, '| pagamento:', estadoPagto);
+        if (estadoPagto === 'APPROVED') {
+            const alvo = extrairMaquinaTempo(info);
+            if (alvo) {
+                console.log('[WEBHOOK] APROVADO na maquininha -> disparando:', alvo.maquina, 'tempo:', alvo.tempo);
+                executarDisparo(alvo.maquina, alvo.tempo);
+            } else {
+                console.log('[WEBHOOK] APROVADO, mas SEM external_reference para identificar a máquina');
+            }
+        } else {
+            console.log('[WEBHOOK] maquininha -> pagamento ainda não aprovado, aguardando...');
+        }
+        return res.sendStatus(200);
+    }
+    // ---- EVENTO DE PAGAMENTO (topic payment) ----
+    if (tipoEvento === 'payment' || tipoEvento === 'payment.created') {
+        const idPagamento = (req.body.data && req.body.data.id) ? req.body.data.id : req.query['data.id'];
+        if (idPagamento) {
+            const tokensUnicos = [...new Set(Object.values(CLIENTES).map(c => c.token_mp))];
+            for (const token of tokensUnicos) {
+                try {
+                    const response = await axios.get(`https://api.mercadopago.com/v1/payments/${idPagamento}`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    console.log('[WEBHOOK] pagamento', idPagamento, '-> status:', response.data.status);
+                    if (response.data.status === 'approved') {
+                        let alvo = null;
+                        if (response.data.metadata && response.data.metadata.maquina) {
+                            alvo = { maquina: response.data.metadata.maquina, tempo: response.data.metadata.tempo_planilha || "45" };
+                        } else {
+                            alvo = extrairMaquinaTempo(response.data);
+                        }
+                        if (alvo) {
+                            console.log('[WEBHOOK] PIX/QR aprovado -> disparando:', alvo.maquina, 'tempo:', alvo.tempo);
+                            executarDisparo(alvo.maquina, alvo.tempo);
+                            return res.sendStatus(200);
+                        }
+                        // [ALTERADO] Log de diagnóstico: pagamento aprovado mas sem máquina identificável
+                        console.log('[WEBHOOK] pagamento', idPagamento, 'aprovado mas SEM maquina identificavel (sem metadata.maquina nem external_reference)');
+                    }
+                } catch (err) {
+                    console.log('[WEBHOOK] erro ao consultar pagamento', idPagamento, ':', err.message);
+                }
+            }
+        }
+    }
+    res.sendStatus(200);
 });
-
 // --- 15. MAQUININHA FÍSICA ---
 app.post('/api/pagar_fisico', async (req, res) => {
     let { id_maquina, tempo } = req.body; 
@@ -421,30 +467,25 @@ app.post('/api/pagar_fisico', async (req, res) => {
         INTENTS_ATIVOS[id_maquina] = response.data.id; res.json({ success: true, intent_id: response.data.id });
     } catch (error) { res.status(500).json({ error: "Erro na maquininha." }); }
 });
-
 app.post('/api/cancelar_fisico', async (req, res) => {
     const { id_maquina } = req.body; const config = CLIENTES[id_maquina]; const intentId = INTENTS_ATIVOS[id_maquina];
     if (!config || !intentId) return res.json({ success: false });
     try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); delete INTENTS_ATIVOS[id_maquina]; } catch (e) {}
     res.json({ success: true });
 });
-
 app.get('/limpar-fila/:id_maquina', async (req, res) => {
     const id = req.params.id_maquina; const config = CLIENTES[id];
     if (!config || !config.device_id) return res.send("Máquina sem DEVICE_ID");
     try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); res.send("<h2 style='color:green;'>✅ Fila limpa!</h2>"); } catch (error) { res.send("<p>" + error.message + "</p>"); }
 });
-
 // --- 16. TOTEM COMPACTO PARA TABLET (HORIZONTAL) ---
 app.get('/totem/:donoUrl', (req, res) => {
     const donoRequisitado = req.params.donoUrl.toLowerCase();
     let maquinasDaLoja = Object.keys(CLIENTES).filter(id => CLIENTES[id].dono.toLowerCase() === donoRequisitado);
     if (maquinasDaLoja.length === 0) return res.send("<h1 style='text-align:center; font-family:sans-serif; margin-top:50px; color:#2c3e50;'>Nenhuma máquina encontrada para esta loja.</h1>");
-    
     // Separa e ordena as máquinas por tipo
     let secadoras = maquinasDaLoja.filter(id => id.toLowerCase().includes('sec')).sort((a,b) => a.localeCompare(b));
     let lavadoras = maquinasDaLoja.filter(id => !id.toLowerCase().includes('sec')).sort((a,b) => a.localeCompare(b));
-
     function gerarBotao(idOriginal, isSecadora) {
         if (!idOriginal) return '';
         let numMatch = idOriginal.match(/\d+$/);
@@ -453,22 +494,18 @@ app.get('/totem/:donoUrl', (req, res) => {
         let icone = isSecadora ? '🔥' : '💧';
         let st = STATUS_CACHE[idOriginal] || "DISPONIVEL";
         let isOcupada = st.includes("LAVANDO") || st.includes("SECANDO") || st.includes("ENXAGUE") || st.includes("CENTRIF") || st.includes("OCUPADA");
-        
         let cssClasse = isOcupada ? 'ocupada' : (isSecadora ? 'secadora-livre' : 'lavadora-livre');
         let evento = isOcupada ? `alert('Esta máquina já está lavando roupas de outro cliente!')` : `abrirConfirmacao('${nomeAmigavel}', '${idOriginal}')`;
         let textoBadge = isOcupada ? "EM USO ⏳" : "TOCAR PARA PAGAR";
-
         return `<div id="${idOriginal}" class="botao-maq ${cssClasse}" onclick="${evento}">
             <div style="font-size:50px;">${icone}</div>
             <h2 style="margin:8px 0; font-size:20px;">${nomeAmigavel}</h2>
             <div id="badge-${idOriginal}" style="background:rgba(0,0,0,0.2); border-radius:6px; padding:8px; font-size:14px; font-weight:bold;">${textoBadge}</div>
         </div>`;
     }
-
     let htmlSecadoras = `<div class="linha-maquinas">` + secadoras.map(id => gerarBotao(id, true)).join('') + `</div>`;
     let htmlLavadoras = `<div class="linha-maquinas">` + lavadoras.map(id => gerarBotao(id, false)).join('') + `</div>`;
     let htmlTotem = htmlSecadoras + htmlLavadoras;
-
     res.send(`
     <!DOCTYPE html>
     <html>
@@ -480,21 +517,17 @@ app.get('/totem/:donoUrl', (req, res) => {
             body { font-family: sans-serif; background: #ecf0f1; margin: 0; padding: 10px; user-select: none; overflow-x: hidden; }
             h1 { text-align: center; color: #2c3e50; font-size: 26px; margin-bottom: 2px; margin-top: 5px; }
             p.subtitulo { text-align: center; color: #7f8c8d; font-size: 16px; margin-bottom: 15px; margin-top: 0; }
-            
             .loja-container { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 15px; width: 100%; max-width: 1000px; margin: 0 auto; }
             .linha-maquinas { display: flex; flex-direction: row; justify-content: center; gap: 15px; width: 100%; flex-wrap: wrap; }
-            
             .botao-maq { border-radius:12px; padding:15px; color:white; text-align:center; cursor:pointer; box-shadow: 0 4px 8px rgba(0,0,0,0.15); transition: transform 0.1s; flex: 1; max-width: 210px; min-width: 150px; }
             .botao-maq:active { transform: scale(0.97); }
             .secadora-livre { background: #e67e22; }
             .lavadora-livre { background: #2980b9; }
             .ocupada { background: #95a5a6; opacity: 0.6; cursor: not-allowed; }
-            
             .overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 1000; color: white; text-align: center; justify-content: center; align-items: center; flex-direction: column; overflow-y: auto; }
             .btn-acao { padding: 15px 30px; font-size: 16px; font-weight: bold; color: white; border: none; border-radius: 8px; cursor: pointer; margin: 5px; }
             .btn-sim { background: #2ecc71; }
             .btn-nao { background: #e74c3c; }
-            
             .btn-escolha { padding: 15px; font-size: 18px; border-radius: 12px; width: 100%; max-width: 300px; border: none; color: white; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; flex: 1; }
             .btn-cartao { background: #e67e22; }
             .btn-cartao:active { background: #d35400; }
@@ -506,7 +539,6 @@ app.get('/totem/:donoUrl', (req, res) => {
         <h1>Bem-vindo à Unileve</h1>
         <p class="subtitulo">Toque na máquina que você deseja usar:</p>
         <div class="loja-container">${htmlTotem}</div>
-        
         <div id="telaConfirmacao" class="overlay">
             <div style="font-size:45px; margin-bottom: 5px;">👕</div>
             <h2 style="font-size:24px; color:#f1c40f; margin:0 0 10px 0;">ATENÇÃO</h2>
@@ -517,7 +549,6 @@ app.get('/totem/:donoUrl', (req, res) => {
                 <button class="btn-acao btn-sim" onclick="irParaEscolha()">SIM, JÁ COLOQUEI</button>
             </div>
         </div>
-        
         <div id="telaEscolha" class="overlay">
             <h2 style="font-size:26px; margin-bottom: 20px; color:#fff;">Como deseja pagar?</h2>
             <div style="display: flex; justify-content: center; gap: 15px; width: 100%; max-width: 600px; margin-bottom: 15px;">
@@ -526,14 +557,12 @@ app.get('/totem/:donoUrl', (req, res) => {
             </div>
             <button class="btn-acao btn-nao" style="margin-top:10px; background: transparent; border: 2px solid #e74c3c; padding: 10px 25px;" onclick="cancelarTudo()">CANCELAR</button>
         </div>
-        
         <div id="telaPagamento" class="overlay">
             <div style="font-size:60px; margin-top: 10px;">💳</div>
             <h2 style="font-size:24px; margin:10px 0;">Vá até a maquininha ao lado!</h2>
             <p style="font-size:18px; color:#bdc3c7; margin:5px 0;">Aproxime ou insira seu cartão para liberar a <br><b id="maqAlvoCartao" style="color:#2ecc71; font-size:22px; display:inline-block; margin-top:5px;">MÁQUINA</b>.</p>
             <button class="btn-acao btn-nao" style="margin-top:20px; padding: 15px 30px;" onclick="cancelarTudo()">CANCELAR COMPRA</button>
         </div>
-        
         <div id="telaPixTotem" class="overlay">
             <div style="display:flex; flex-direction:row; align-items:center; justify-content:center; gap:25px; width:100%; padding:15px; box-sizing:border-box; height:100%;">
                 <div style="text-align:left; max-width:50%;">
@@ -548,13 +577,11 @@ app.get('/totem/:donoUrl', (req, res) => {
                 </div>
             </div>
         </div>
-        
         <div id="telaSucesso" class="overlay" style="background: rgba(39, 174, 96, 0.95);">
             <div style="font-size:80px; animation: pop 0.5s;">✅</div>
             <h2 style="font-size:32px; margin-top:15px; color:#fff;">PAGAMENTO APROVADO!</h2>
             <p style="font-size:20px; color:#fff; margin-top:10px;">Sua máquina já foi iniciada.</p>
         </div>
-        
         <div id="telaErro" class="overlay">
             <div style="font-size:50px;">⚠️</div>
             <h2 style="font-size:26px; color:#ff7675; margin-top:10px;">Maquininha Ocupada!</h2>
@@ -673,60 +700,8 @@ app.get('/totem/:donoUrl', (req, res) => {
     </html>
     `);
 });
-
 // --- 17. RETORNO MP ---
 app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
 app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
-// --- 18. OAUTH MP — CONECTAR CONTA DO DONO ---
-// ============================================
-// ROTA DE CALLBACK OAuth - CÓDIGO COMPLETO
-// ============================================
-app.get('/mp-callback', async (req, res) => {
-  const code = req.query.code;
-  const state = req.query.state;
-
-  // 1) Se não veio o code, avisa
-  if (!code) {
-    console.log('[OAUTH] ERRO: código ausente (URL aberta direto no navegador)');
-    return res.status(400).send('Código ausente. Tente novamente.');
-  }
-
-  console.log('[OAUTH] code recebido para o dono:', state || 'desconhecido');
-
-  // 2) Troca o code por access_token + refresh_token
-  try {
-    const resposta = await fetch('https://api.mercadopago.com/oauth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        grant_type: 'authorization_code',
-        client_id: process.env.MP_CLIENT_ID,
-        client_secret: process.env.MP_CLIENT_SECRET,
-        code: code,
-        redirect_uri: 'https://lavanderia-server.onrender.com/mp-callback'
-      })
-    });
-
-    const dados = await resposta.json();
-    console.log('[OAUTH] resposta do MP:', resposta.status, JSON.stringify(dados).slice(0, 300));
-
-    if (dados.access_token) {
-      console.log('[OAUTH] SUCESSO: access_token recebido para:', state || 'dono');
-      // (aqui vai a sua lógica: salvar access_token e refresh_token na planilha)
-      return res.status(200).send('Conta conectada com sucesso!');
-    }
-
-    console.log('[OAUTH] ERRO na troca do code:', dados.error || 'sem detalhes');
-    return res.status(400).send('Erro ao conectar a conta MP. Verifique as credenciais.');
-  } catch (erro) {
-    console.log('[OAUTH] falha de rede ao falar com o MP:', erro.message);
-    return res.status(500).send('Erro interno ao conectar com o MP.');
-  }
-});
-
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
-// Mantém o servidor acordado (ping a cada 10 min)
-setInterval(() => {
-    axios.get('https://lavanderia-server.onrender.com/').catch(() => {});
-}, 10 * 60 * 1000);
