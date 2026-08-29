@@ -20,7 +20,6 @@ const BASE_URL = process.env.BASE_URL || "https://lavanderia-v2.onrender.com";
 const WEBHOOK_URL = process.env.WEBHOOK_URL || `${BASE_URL}/webhook`;
 let CLIENTES = {};
 let STATUS_CACHE = {};
-let INTENTS_ATIVOS = {};
 let CACHE_DADOS_MAQUINAS = {};
 const RECHECAGENS = {};
 // [ALTERADO] GUARDA ANTI-DUPLO DISPARO: registra os IDs de pagamento já disparados
@@ -200,7 +199,6 @@ function agendarRechecagem(idPagamento, token) {
                     alvo = extrairMaquinaTempo(r.data);
                 }
                 if (alvo) {
-                    // [ALTERADO] usa o guarda anti-duplo (ID do pagamento)
                     dispararUmaVez(idPagamento, alvo.maquina, alvo.tempo);
                 }
             } else {
@@ -334,7 +332,6 @@ app.get('/logout', (req, res) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); res.setHeader('Pragma', 'no-cache'); res.setHeader('Expires', '0');
     res.send(`<script>window.location.href = '/painel';</script>`);
 });
-
 // --- ROTA JSON PARA O APP ANDROID (UnilevePOS_MP) ---
 app.get('/api/maquinas/:donoUrl', (req, res) => {
     const donoRequisitado = String(req.params.donoUrl).toLowerCase();
@@ -357,7 +354,6 @@ app.get('/api/maquinas/:donoUrl', (req, res) => {
         });
     res.json(maquinas);
 });
-
 // --- 10. ACIONAR (USA O CÉREBRO PARA SECAR) ---
 app.post('/api/acionar', (req, res) => {
     const dono = req.cookies.dono; const { id, cmd } = req.body;
@@ -471,7 +467,7 @@ app.post('/webhook', async (req, res) => {
     console.log('[WEBHOOK] payload recebido:', JSON.stringify(info));
     let tipoEvento = req.query.type || (info && info.type) || (info && info.action) || req.query.topic;
     console.log('[WEBHOOK] tipo de evento:', tipoEvento);
-    // ---- EVENTO DA MAQUININHA (Point) ----
+    // ---- EVENTO DA MAQUININHA (Point) [LEGADO - mantido por compatibilidade] ----
     if (tipoEvento === 'point_integration_wh' || (info && info.state && String(info.state).toUpperCase() === 'FINISHED' && info.payment)) {
         const estadoIntent = (info.payment && info.payment.state) ? String(info.payment.state).toUpperCase() : '';
         const estadoPagto = (info.payment && info.payment.payment && info.payment.payment.state)
@@ -481,7 +477,6 @@ app.post('/webhook', async (req, res) => {
         if (estadoPagto === 'APPROVED') {
             const alvo = extrairMaquinaTempo(info);
             if (alvo) {
-                // [ALTERADO] usa o guarda anti-duplo (ID do payment-intent da maquininha)
                 const refMaq = (info.payment && info.payment.id) ? info.payment.id : (info.payment && info.payment.payment && info.payment.payment.id);
                 dispararUmaVez(refMaq, alvo.maquina, alvo.tempo);
             } else {
@@ -511,7 +506,6 @@ app.post('/webhook', async (req, res) => {
                             alvo = extrairMaquinaTempo(response.data);
                         }
                         if (alvo) {
-                            // [ALTERADO] usa o guarda anti-duplo (ID do pagamento)
                             dispararUmaVez(idPagamento, alvo.maquina, alvo.tempo);
                             return res.sendStatus(200);
                         }
@@ -528,32 +522,44 @@ app.post('/webhook', async (req, res) => {
     }
     res.sendStatus(200);
 });
-// --- 15. MAQUININHA FÍSICA ---
+// --- 15. MAQUININHA FÍSICA (MODELO SMARTAPP) ---
+// No modelo SmartApp, o pagamento é gerado pelo SDK DENTRO do app na Point.
+// O servidor NÃO cria mais payment-intents via Point API.
+// Este endpoint apenas valida a máquina, calcula o valor e devolve a referência
+// para o app lançar a cobrança via MPManager.paymentFlow.
 app.post('/api/pagar_fisico', async (req, res) => {
-    let { id_maquina, tempo } = req.body; 
+    let { id_maquina, tempo } = req.body;
     id_maquina = id_maquina ? String(id_maquina).trim() : id_maquina;
     if (Object.keys(CLIENTES).length === 0) { await carregarConfiguracoes(); }
     const config = CLIENTES[id_maquina];
-    if (!config || !config.device_id) return res.status(400).json({ error: "Servidor reiniciando ou máquina não configurada. Tente novamente." });
-    if (INTENTS_ATIVOS[id_maquina]) { try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${INTENTS_ATIVOS[id_maquina]}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); } catch(e) {} delete INTENTS_ATIVOS[id_maquina]; }
+    if (!config) return res.status(400).json({ error: "Servidor reiniciando ou máquina não configurada. Tente novamente." });
+    // Máquina ocupada? Bloqueia.
+    const stAtual = STATUS_CACHE[id_maquina] || "";
+    if (["LAVANDO", "SECANDO", "ENXAGUE", "CENTRIF", "OCUPADA", "TEMPO:"].some(x => stAtual.includes(x)))
+        return res.status(400).json({ error: "MÁQUINA EM USO." });
     try {
         const dados = await buscarDadosNaPlanilha(config.sheet_id, id_maquina, tempo);
         if (parseFloat(dados.preco) <= 0) return res.status(400).json({ error: "Preço zero." });
-        const ordemPagamento = { amount: Math.round(parseFloat(dados.preco) * 100), description: `Unileve - ${id_maquina}`, additional_info: { external_reference: `${id_maquina}|${dados.tempo}`, print_on_terminal: false } };
-        const response = await axios.post(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, ordemPagamento, { headers: { 'Authorization': `Bearer ${config.token_mp}` } });
-        INTENTS_ATIVOS[id_maquina] = response.data.id; res.json({ success: true, intent_id: response.data.id });
-    } catch (error) { res.status(500).json({ error: "Erro na maquininha." }); }
+        // Sinaliza ao app: cobrar X reais na máquina Y. O app inicia o SDK.
+        res.json({
+            success: true,
+            id_maquina: id_maquina,
+            valor: parseFloat(dados.preco),
+            tempo: dados.tempo,
+            external_reference: `${id_maquina}|${dados.tempo}`
+        });
+    } catch (error) {
+        res.status(500).json({ error: "Erro na maquininha." });
+    }
 });
+// [SMARTAPP] Cancelamento agora é feito pelo SDK dentro do app.
+// Mantido apenas para compatibilidade com o frontend (totem), sem chamada à Point API.
 app.post('/api/cancelar_fisico', async (req, res) => {
-    const { id_maquina } = req.body; const config = CLIENTES[id_maquina]; const intentId = INTENTS_ATIVOS[id_maquina];
-    if (!config || !intentId) return res.json({ success: false });
-    try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents/${intentId}`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); delete INTENTS_ATIVOS[id_maquina]; } catch (e) {}
+    const { id_maquina } = req.body;
     res.json({ success: true });
 });
-app.get('/limpar-fila/:id_maquina', async (req, res) => {
-    const id = req.params.id_maquina; const config = CLIENTES[id];
-    if (!config || !config.device_id) return res.send("Máquina sem DEVICE_ID");
-    try { await axios.delete(`https://api.mercadopago.com/point/integration-api/devices/${config.device_id}/payment-intents`, { headers: { 'Authorization': `Bearer ${config.token_mp}` } }); res.send("<h2 style='color:green;'>✅ Fila limpa!</h2>"); } catch (error) { res.send("<p>" + error.message + "</p>"); }
+app.get('/limpar-fila/:id_maquina', (req, res) => {
+    res.send("<h2 style='color:green;'>✅ Nenhuma fila pendente (modelo SmartApp).</h2>");
 });
 // --- 16. TOTEM COMPACTO PARA TABLET (HORIZONTAL) ---
 app.get('/totem/:donoUrl', (req, res) => {
