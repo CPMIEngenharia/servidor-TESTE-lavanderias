@@ -24,6 +24,8 @@ let CACHE_DADOS_MAQUINAS = {};
 const RECHECAGENS = {};
 // [ALTERADO] GUARDA ANTI-DUPLO DISPARO: registra os IDs de pagamento já disparados
 const DISPAROS_REALIZADOS = {};
+// [NOVO] Rate limit para o SmartApp: evita disparar a mesma máquina duas vezes em < 30s
+const ULTIMO_DISPARO_SMARTAPP = {};
 // --- 2. AUTENTICAÇÃO GOOGLE (ESCRITA) ---
 function getGoogleAuth() {
     return new google.auth.GoogleAuth({
@@ -558,8 +560,55 @@ app.post('/api/cancelar_fisico', async (req, res) => {
     const { id_maquina } = req.body;
     res.json({ success: true });
 });
-app.get('/limpar-fila/:id_maquina', (req, res) => {
-    res.send("<h2 style='color:green;'>✅ Nenhuma fila pendente (modelo SmartApp).</h2>");
+// --- 15b. SMARTAPP: CONFIRMAÇÃO DE PAGAMENTO VINDA DO APP ---
+// No modelo SmartApp, o pagamento é processado pelo SDK dentro da maquininha.
+// O app recebe o callback onSuccess e nos avisa aqui para liberar a máquina.
+// Isso substitui o webhook, que não existe no fluxo SmartApp.
+app.post('/api/confirmar_pagamento_smartapp', async (req, res) => {
+    const { externalReference, maquinaId, valor, donoUrl } = req.body;
+
+    if (!maquinaId) {
+        return res.status(400).json({ error: "maquinaId é obrigatório" });
+    }
+
+    // Verifica se a máquina existe no cadastro
+    if (!CLIENTES[maquinaId]) {
+        console.log(`[SMARTAPP] Máquina ${maquinaId} não encontrada no cadastro`);
+        return res.status(400).json({ error: "Máquina não encontrada" });
+    }
+
+    // Verifica se já está em uso (STATUS_CACHE)
+    const stAtual = STATUS_CACHE[maquinaId] || "";
+    if (["LAVANDO", "SECANDO", "ENXAGUE", "CENTRIF", "OCUPADA", "TEMPO:"].some(x => stAtual.includes(x))) {
+        console.log(`[SMARTAPP] Máquina ${maquinaId} já está em uso. Ignorando confirmação.`);
+        return res.json({ success: true, message: "Máquina já em uso." });
+    }
+
+    // Rate limit: evitar disparo duplicado se o app retentar em < 30s
+    const agora = Date.now();
+    if (ULTIMO_DISPARO_SMARTAPP[maquinaId] && (agora - ULTIMO_DISPARO_SMARTAPP[maquinaId] < 30000)) {
+        console.log(`[SMARTAPP] Rate limit para ${maquinaId} — ignorando retry rápido`);
+        return res.json({ success: true, message: "Comando já enviado." });
+    }
+    ULTIMO_DISPARO_SMARTAPP[maquinaId] = agora;
+
+    // Extrai o tempo da externalReference (formato: maquinaId|tempo)
+    let tempo = "45";
+    if (externalReference && String(externalReference).includes('|')) {
+        const partes = String(externalReference).split('|');
+        if (partes[1]) {
+            const tempoRaw = partes[1].replace('preco_', '');
+            tempo = tempoRaw === 'secar' ? '45' : tempoRaw;
+        }
+    }
+
+    console.log(`[SMARTAPP] ✅ Pagamento confirmado via app para ${maquinaId} | tempo: ${tempo} | valor: ${valor} | dono: ${donoUrl}`);
+
+    // Dispara a máquina via MQTT (usa ref única para não colidir com o dedup de 6h)
+    const ref = `smartapp_${maquinaId}_${agora}`;
+    dispararUmaVez(ref, maquinaId, tempo);
+
+    res.json({ success: true, message: "Máquina liberada." });
 });
 // --- 16. TOTEM COMPACTO PARA TABLET (HORIZONTAL) ---
 app.get('/totem/:donoUrl', (req, res) => {
