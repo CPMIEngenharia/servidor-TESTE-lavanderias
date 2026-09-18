@@ -22,6 +22,16 @@ let CLIENTES = {};
 let STATUS_CACHE = {};
 let CACHE_DADOS_MAQUINAS = {};
 const RECHECAGENS = {};
+// --- MANTER ACORDADO (Render free dorme após ~15 min sem tráfego) ---
+setInterval(async () => {
+  const url = process.env.RENDER_EXTERNAL_URL || BASE_URL;
+  try {
+    const r = await axios.get(`${url}/api/status_geral`, { timeout: 15000 });
+    console.log('[PING] keep-alive OK (' + url + ')');
+  } catch (e) {
+    console.error('[PING] erro no keep-alive: ' + e.message);
+  }
+}, 13 * 60 * 1000);
 // [ALTERADO] GUARDA ANTI-DUPLO DISPARO: registra os IDs de pagamento já disparados
 const DISPAROS_REALIZADOS = {};
 // [NOVO] Rate limit para o SmartApp: evita disparar a mesma máquina duas vezes em < 30s
