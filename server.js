@@ -22,7 +22,13 @@ let CLIENTES = {};
 let STATUS_CACHE = {};
 let CACHE_DADOS_MAQUINAS = {};
 const RECHECAGENS = {};
+// [ALTERADO] GUARDA ANTI-DUPLO DISPARO: registra os IDs de pagamento já disparados
+const DISPAROS_REALIZADOS = {};
+// [NOVO] Rate limit para o SmartApp: evita disparar a mesma máquina duas vezes em < 30s
+const ULTIMO_DISPARO_SMARTAPP = {};
 // --- MANTER ACORDADO (Render free dorme após ~15 min sem tráfego) ---
+// No servidor de TESTE (free) evita o sleep. Em produção (pago) é inofensivo.
+// REMOVER este bloco quando subir em produção, se preferir.
 setInterval(async () => {
   const url = process.env.RENDER_EXTERNAL_URL || BASE_URL;
   try {
@@ -32,10 +38,6 @@ setInterval(async () => {
     console.error('[PING] erro no keep-alive: ' + e.message);
   }
 }, 13 * 60 * 1000);
-// [ALTERADO] GUARDA ANTI-DUPLO DISPARO: registra os IDs de pagamento já disparados
-const DISPAROS_REALIZADOS = {};
-// [NOVO] Rate limit para o SmartApp: evita disparar a mesma máquina duas vezes em < 30s
-const ULTIMO_DISPARO_SMARTAPP = {};
 // --- 2. AUTENTICAÇÃO GOOGLE (ESCRITA) ---
 function getGoogleAuth() {
     return new google.auth.GoogleAuth({
@@ -558,7 +560,7 @@ app.post('/api/pagar_fisico', async (req, res) => {
             id_maquina: id_maquina,
             valor: parseFloat(dados.preco),
             tempo: dados.tempo,
-            external_reference: `${id_maquina}|${dados.tempo}`
+            external_reference: `${id_maquina}|${dados.tempo}|${Date.now()}`
         });
     } catch (error) {
         res.status(500).json({ error: "Erro na maquininha." });
@@ -570,53 +572,62 @@ app.post('/api/cancelar_fisico', async (req, res) => {
     const { id_maquina } = req.body;
     res.json({ success: true });
 });
+app.get('/limpar-fila/:id_maquina', (req, res) => {
+    res.send("<h2 style='color:green;'>✅ Nenhuma fila pendente (modelo SmartApp).</h2>");
+});
 // --- 15b. SMARTAPP: CONFIRMAÇÃO DE PAGAMENTO VINDA DO APP ---
 // No modelo SmartApp, o pagamento é processado pelo SDK dentro da maquininha.
 // O app recebe o callback onSuccess e nos avisa aqui para liberar a máquina.
 // Isso substitui o webhook, que não existe no fluxo SmartApp.
+// Confia direto no callback do app (decisão do projeto) — sem consulta à API do MP.
 app.post('/api/confirmar_pagamento_smartapp', async (req, res) => {
     const { externalReference, maquinaId, valor, donoUrl } = req.body;
 
-    if (!maquinaId) {
+    // Resolve a máquina: prioriza maquinaId; senão extrai da externalReference
+    let maquina = maquinaId ? String(maquinaId).trim() : "";
+    if (!maquina && externalReference && String(externalReference).includes('|')) {
+        maquina = String(externalReference).split('|')[0].trim();
+    }
+    if (!maquina) {
         return res.status(400).json({ error: "maquinaId é obrigatório" });
     }
 
     // Verifica se a máquina existe no cadastro
-    if (!CLIENTES[maquinaId]) {
-        console.log(`[SMARTAPP] Máquina ${maquinaId} não encontrada no cadastro`);
+    if (!CLIENTES[maquina]) {
+        console.log(`[SMARTAPP] Máquina ${maquina} não encontrada no cadastro`);
         return res.status(400).json({ error: "Máquina não encontrada" });
     }
 
     // Verifica se já está em uso (STATUS_CACHE)
-    const stAtual = STATUS_CACHE[maquinaId] || "";
+    const stAtual = STATUS_CACHE[maquina] || "";
     if (["LAVANDO", "SECANDO", "ENXAGUE", "CENTRIF", "OCUPADA", "TEMPO:"].some(x => stAtual.includes(x))) {
-        console.log(`[SMARTAPP] Máquina ${maquinaId} já está em uso. Ignorando confirmação.`);
+        console.log(`[SMARTAPP] Máquina ${maquina} já está em uso. Ignorando confirmação.`);
         return res.json({ success: true, message: "Máquina já em uso." });
     }
 
     // Rate limit: evitar disparo duplicado se o app retentar em < 30s
     const agora = Date.now();
-    if (ULTIMO_DISPARO_SMARTAPP[maquinaId] && (agora - ULTIMO_DISPARO_SMARTAPP[maquinaId] < 30000)) {
-        console.log(`[SMARTAPP] Rate limit para ${maquinaId} — ignorando retry rápido`);
+    if (ULTIMO_DISPARO_SMARTAPP[maquina] && (agora - ULTIMO_DISPARO_SMARTAPP[maquina] < 30000)) {
+        console.log(`[SMARTAPP] Rate limit para ${maquina} — ignorando retry rápido`);
         return res.json({ success: true, message: "Comando já enviado." });
     }
-    ULTIMO_DISPARO_SMARTAPP[maquinaId] = agora;
+    ULTIMO_DISPARO_SMARTAPP[maquina] = agora;
 
-    // Extrai o tempo da externalReference (formato: maquinaId|tempo)
+    // Extrai o tempo da externalReference (formatos: maquina|tempo  OU  maquina|tempo|timestamp)
     let tempo = "45";
     if (externalReference && String(externalReference).includes('|')) {
         const partes = String(externalReference).split('|');
         if (partes[1]) {
-            const tempoRaw = partes[1].replace('preco_', '');
+            const tempoRaw = String(partes[1]).replace('preco_', '');
             tempo = tempoRaw === 'secar' ? '45' : tempoRaw;
         }
     }
 
-    console.log(`[SMARTAPP] ✅ Pagamento confirmado via app para ${maquinaId} | tempo: ${tempo} | valor: ${valor} | dono: ${donoUrl}`);
+    console.log(`[SMARTAPP] ✅ Pagamento confirmado via app para ${maquina} | tempo: ${tempo} | valor: ${valor} | dono: ${donoUrl}`);
 
     // Dispara a máquina via MQTT (usa ref única para não colidir com o dedup de 6h)
-    const ref = `smartapp_${maquinaId}_${agora}`;
-    dispararUmaVez(ref, maquinaId, tempo);
+    const ref = `smartapp_${maquina}_${agora}`;
+    dispararUmaVez(ref, maquina, tempo);
 
     res.json({ success: true, message: "Máquina liberada." });
 });
