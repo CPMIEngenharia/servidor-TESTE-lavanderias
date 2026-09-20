@@ -857,3 +857,5 @@ app.get('/sucesso', (req, res) => res.send(`<h2>✅ Sucesso!</h2>`));
 app.get('/erro', (req, res) => res.send(`<h2>❌ Erro!</h2>`));
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Servidor Pronto na porta ${PORT}`));
+//---- 18.  Servir firmware .bin para OTA
+app.use('/firmware', express.static(path.join(__dirname, 'firmware')));
