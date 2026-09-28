@@ -5,6 +5,8 @@ const { google } = require('googleapis');
 const path = require('path');
 const cookieParser = require('cookie-parser');
 const app = express();
+// ===== OTA: serve os arquivos da pasta firmware =====
+app.use('/firmware', express.static(path.join(__dirname, 'firmware')));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
